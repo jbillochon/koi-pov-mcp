@@ -11,10 +11,18 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from xml.sax.saxutils import escape as _escape
 
 from .common import NOT_MEASURED, Data
 
 log = logging.getLogger(__name__)
+
+
+def esc(value) -> str:
+    """reportlab parses paragraph text as markup, so & and < must be escaped
+    before any of our own colour tags are added."""
+    return _escape(str(value))
+
 
 TEAL_DARK = "#0B6E4F"
 TEAL = "#12805C"
@@ -100,12 +108,12 @@ def build_pdf(data: dict, out_path: str, narrative: dict | None = None) -> str:
     def para(text, style=body):
         for chunk in str(text).split("\n"):
             if chunk.strip():
-                story.append(Paragraph(chunk.strip(), style))
+                story.append(Paragraph(esc(chunk.strip()), style))
 
     def table(headers, rows, weights=None, colour_col=None, palette=None):
         if not rows:
             return
-        head = [Paragraph(h, cell_head) for h in headers]
+        head = [Paragraph(esc(h), cell_head) for h in headers]
         body_rows = []
         styles = [
             ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(TEAL_DARK)),
@@ -121,9 +129,9 @@ def build_pdf(data: dict, out_path: str, narrative: dict | None = None) -> str:
         for ri, row in enumerate(rows, start=1):
             cells = []
             for ci, value in enumerate(row):
-                text = str(value)
+                text = esc(value)
                 if colour_col is not None and ci == colour_col:
-                    hexcode = (palette or RISK_COLOUR).get(text.lower())
+                    hexcode = (palette or RISK_COLOUR).get(str(value).lower())
                     if hexcode:
                         text = ('<font color="' + hexcode + '"><b>' + text
                                 + "</b></font>")
@@ -150,7 +158,7 @@ def build_pdf(data: dict, out_path: str, narrative: dict | None = None) -> str:
     if r.meta.get("prepared_by"):
         lines.append("Prepared by " + str(r.meta["prepared_by"]))
     for line in lines:
-        story.append(Paragraph(line, cover_info))
+        story.append(Paragraph(esc(line), cover_info))
     story.append(PageBreak())
 
     # ---------------------------------------------------- executive summary
@@ -298,7 +306,7 @@ def build_pdf(data: dict, out_path: str, narrative: dict | None = None) -> str:
                   weights=[3, 1, 3])
         mitre = r.mitre_rows(20)
         if mitre:
-            story.append(Paragraph("ATT&CK techniques from findings", h2))
+            story.append(Paragraph("ATT&amp;CK techniques from findings", h2))
             para("Mapped from Koi finding types through a curated mapping; "
                  "findings with no mapping are omitted rather than guessed.",
                  lede_st)
