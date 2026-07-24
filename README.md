@@ -3,7 +3,8 @@
 MCP server + Claude skill to run a **Cortex AES (Koi) Proof of Value** end to end:
 collect tenant evidence over the Koi API, review the gaps, and produce the
 customer-facing report and restitution deck. **Multi-tenant**: an SE running
-five or six PoVs in parallel keeps one isolated report per tenant.
+five or six PoVs in parallel keeps one isolated report per tenant, and adds a
+tenant with a single terminal command.
 
 Standalone and cross-platform: **Windows, Linux, macOS**. No Docker, no database,
 no running service. One Python package, one skill folder.
@@ -35,9 +36,11 @@ Claude Desktop / Claude Code
 - The **MCP server** talks to the tenants: authentication, per-route rate
   limiting (30 req/min), pagination, backoff. It aggregates each tenant into
   its own `pov_report.json`.
-- The **skill** governs how deliverables are written from that JSON: never
-  invent, evidence before assertion, a zero is not "not measured", gap list
-  before writing, one tenant per deliverable.
+- The **CLI** (same binary) manages tenant keys: hidden input, stored in the
+  OS credential store, live-reloaded by the server.
+- The **skill** governs how deliverables are written from the collected JSON:
+  never invent, evidence before assertion, a zero is not "not measured", gap
+  list before writing, one tenant per deliverable.
 
 ## Requirements
 
@@ -49,8 +52,9 @@ Claude Desktop / Claude Code
 ## Quick install
 
 The installers create an isolated venv in `~/.koi-pov-mcp`, install the
-package, register the MCP server in your Claude Desktop config, and install
-the companion skill into `~/.claude/skills/`.
+package, register the MCP server in your Claude Desktop config, install the
+companion skill into `~/.claude/skills/`, and walk you through adding your
+tenants interactively.
 
 **Windows (PowerShell 5.1+ or pwsh):**
 
@@ -68,54 +72,58 @@ cd koi-pov-mcp
 bash install/install.sh
 ```
 
-The script prompts for a **Koi API key** (input hidden, stored only in your
-local Claude config, registered as the `default` tenant). Press Enter to skip,
-or to configure several tenants instead (below). Then **restart Claude Desktop
-completely** (quit from the tray/menu bar, not just the window).
+At the end, the installer asks for your tenant aliases one by one and prompts
+for each API key with **hidden input**, testing each key against the Koi API
+as it goes. Then **restart Claude Desktop completely** (quit from the
+tray/menu bar, not just the window).
 
 ### Verify
 
 In a new Claude conversation:
 
-> Use the koi_ping tool
+> Use the koi_tenants tool
 
-Expected: `OK: authenticated against the Koi API for tenant 'default'.`
+Expected: the list of your aliases. Then `koi_ping` on one of them should
+answer `OK: authenticated against the Koi API for tenant '<alias>'.`
 
-| Result | Meaning | Fix |
-|---|---|---|
-| `NOT CONFIGURED` | No key found in the server env | Add it to the config (below), restart Claude |
-| `AUTH FAILED (401)` | Key rejected | Regenerate the key in the Koi console |
-| `Unknown tenant` | Alias typo, or key entry missing | Check `koi_tenants` and the env block |
-| tool not found | Server not registered or Claude not restarted | Check config path and JSON syntax, restart |
+## Managing tenants
 
-## Multi-tenant configuration
+One command, from any terminal. No file to edit, no restart: the server
+re-reads the store on every call, so a tenant added mid-conversation is
+usable immediately.
 
-One env entry per tenant, `KOI_API_KEY_<ALIAS>`. The alias (lowercased) is how
-you refer to the tenant in every tool call. A plain `KOI_API_KEY` registers the
-`default` tenant. `KOI_BASE_URL` (global) or `KOI_BASE_URL_<ALIAS>` (per
-tenant) override the API endpoint if ever needed.
-
-```json
-{
-  "mcpServers": {
-    "koi-pov": {
-      "command": "C:\\Users\\you\\.koi-pov-mcp\\venv\\Scripts\\koi-pov-mcp.exe",
-      "env": {
-        "KOI_API_KEY_ACME": "<key for the ACME PoV>",
-        "KOI_API_KEY_GLOBEX": "<key for the Globex PoV>",
-        "KOI_API_KEY_INITECH": "<key for the Initech PoV>"
-      }
-    }
-  }
-}
+```bash
+koi-pov-mcp tenants add acme       # prompts for the key, input hidden
+koi-pov-mcp tenants list
+koi-pov-mcp tenants test acme      # ping the Koi API with that key
+koi-pov-mcp tenants remove acme
 ```
 
-Each tenant gets its own `pov_report.json` under `<workdir>/<alias>/`. State is
-never shared: collecting or resetting one tenant cannot touch another, and the
-skill refuses to mix two tenants in one deliverable.
+On Windows, use the full path (or add the venv Scripts dir to PATH):
 
-`koi_tenants` lists the configured aliases (never the keys) and which ones
-already have a collected report.
+```powershell
+& "$env:USERPROFILE\.koi-pov-mcp\venv\Scripts\koi-pov-mcp.exe" tenants add acme
+```
+
+**Where keys live**: the OS credential store (Windows Credential Manager,
+macOS Keychain, Secret Service/KWallet on Linux) via `keyring`. On systems
+with no usable backend (headless Linux, some WSL setups), the key falls back
+to `tenants.json` in the work directory with permissions restricted to your
+user, and the CLI tells you so. Re-running `tenants add` on an existing alias
+overwrites its key (that is how you rotate one).
+
+`koi_tenants` (the MCP tool) only ever returns aliases, never keys.
+**Never paste an API key into a Claude conversation.**
+
+<details>
+<summary>Alternative: keys as environment variables (legacy, still supported)</summary>
+
+Env entries in the MCP server config take precedence over the store:
+`KOI_API_KEY` registers the `default` tenant, `KOI_API_KEY_<ALIAS>` registers
+`<alias>`. `KOI_BASE_URL[_<ALIAS>]` overrides the API endpoint. Changing env
+vars requires a full Claude Desktop restart, which is why the CLI store is
+the recommended path.
+</details>
 
 ## Manual install
 
@@ -124,7 +132,7 @@ python3 -m venv ~/.koi-pov-mcp/venv
 ~/.koi-pov-mcp/venv/bin/pip install git+https://github.com/jbillochon/koi-pov-mcp.git
 ```
 
-Then add the server to your Claude Desktop config:
+Add the server to your Claude Desktop config (no keys needed in it):
 
 | OS | Config file |
 |---|---|
@@ -132,17 +140,20 @@ Then add the server to your Claude Desktop config:
 | macOS | `~/Library/Application Support/Claude/claude_desktop_config.json` |
 | Linux | `~/.config/Claude/claude_desktop_config.json` |
 
-Use the multi-tenant example above, or a single `KOI_API_KEY` for one tenant.
+```json
+{
+  "mcpServers": {
+    "koi-pov": {
+      "command": "/home/you/.koi-pov-mcp/venv/bin/koi-pov-mcp"
+    }
+  }
+}
+```
+
 On Windows the command is
 `C:\\Users\\you\\.koi-pov-mcp\\venv\\Scripts\\koi-pov-mcp.exe`
-(double backslashes required in JSON).
-
-Finally copy `skill/koi-pov-deliverables/` into `~/.claude/skills/`.
-
-**Never paste an API key into a Claude conversation.** Keys belong in the
-config file (written by you or the installer) and nowhere else. The server
-reads them from its environment; the model never sees them, and `koi_tenants`
-only ever returns aliases.
+(double backslashes required in JSON). Then add tenants with the CLI, and
+copy `skill/koi-pov-deliverables/` into `~/.claude/skills/`.
 
 ## Usage
 
@@ -178,7 +189,7 @@ the `default` tenant automatically.
 
 | Tool | Purpose |
 |---|---|
-| `koi_tenants` | List configured tenant aliases and which have reports. |
+| `koi_tenants` | List configured tenant aliases (never keys) and which have reports. |
 | `koi_ping` | Auth/connectivity probe for one tenant. Run first. |
 | `set_pov_meta` | Customer, author, PoV window for one tenant. |
 | `koi_collect` | Collect one, several, or all domains into a tenant's report. |
@@ -191,14 +202,15 @@ All tenant-scoped tools default to `tenant="default"`.
 ## Roadmap
 
 - **v0.1**: Koi collection, incremental state, companion skill.
-- **v0.2** (current): multi-tenant with isolated per-tenant state.
-- **v0.3**: rendering tools (`render_deliverables`): PPTX and DOCX everywhere
+- **v0.2**: multi-tenant with isolated per-tenant state.
+- **v0.3** (current): tenant CLI, keys in the OS credential store, hot reload.
+- **v0.4**: rendering tools (`render_deliverables`): PPTX and DOCX everywhere
   (`python-pptx`, `python-docx`, pure Python), PDF where WeasyPrint is
   available (needs GTK on Windows, hence optional: `pip install 'koi-pov-mcp[pdf]'`).
-- **v0.4**: optional threat-intel enrichment and XSIAM cross-referencing,
+- **v0.5**: optional threat-intel enrichment and XSIAM cross-referencing,
   ported from povplatform's `intelligence/` and `connectors/xsiam/`.
 
-Until v0.3 lands, deliverables are produced as Markdown by the skill, which
+Until v0.4 lands, deliverables are produced as Markdown by the skill, which
 states explicitly which formats were not rendered.
 
 ## Updating
@@ -209,17 +221,22 @@ cd <your clone> && git pull
 ```
 
 (Windows: `%USERPROFILE%\.koi-pov-mcp\venv\Scripts\pip.exe install --upgrade .`)
-Then restart Claude Desktop.
+Then restart Claude Desktop. Tenant keys are untouched by updates.
 
 ## Troubleshooting
 
-- **`koi_ping` says NOT CONFIGURED** - no key entry in the `env` block, or the
-  value is empty. Edit the config file, restart Claude Desktop fully.
-- **`Unknown tenant`** - the alias does not match any `KOI_API_KEY_<ALIAS>`
-  entry. `koi_tenants` shows what the server actually sees.
-- **Tools never appear** - JSON syntax error in the config (trailing comma is
-  the usual suspect), or the `command` path is wrong. On Windows check the
-  `.exe` suffix and double backslashes.
+- **`koi_tenants` shows no tenants** - none added yet. Run
+  `koi-pov-mcp tenants add <alias>` in a terminal; it applies without restart.
+- **`AUTH FAILED (401)`** - key rejected. Regenerate it in the Koi console,
+  then `tenants add <alias>` again to overwrite.
+- **`Unknown tenant`** - alias typo. `koi-pov-mcp tenants list` (or the
+  `koi_tenants` tool) shows what the server actually sees.
+- **Tools never appear** - JSON syntax error in the Claude config (trailing
+  comma is the usual suspect), or the `command` path is wrong. On Windows
+  check the `.exe` suffix and double backslashes.
+- **Keyring fallback warning** - no OS credential backend available; the key
+  went to a permission-restricted `tenants.json` instead. Normal on headless
+  Linux; on desktop Linux install `gnome-keyring` or KWallet for the real store.
 - **Collection is slow** - expected: the API allows 30 req/min per route and
   pages are 500 items. Use `domains=[...]` and `max_pages` to scope.
 - **`agent_activity` window** - sessions cover up to 30 days, events are

@@ -1,7 +1,7 @@
 ---
 name: koi-pov-deliverables
 description: This skill should be used when closing out a Koi (Cortex AES) Proof of Value and producing the customer-facing wrap-up. Triggers include "generate the PoV deliverables", "write the PoV report", "build the restitution deck", "collect the PoV data", "PoV wrap-up", "PoV closeout", "restitution de PoV". It collects tenant evidence through the koi-pov MCP server (multi-tenant), reviews gaps, then produces an English report and slide deck organised around the success criteria agreed at kickoff. Also use when reviewing or revising an existing PoV report or deck.
-version: 2.1.0
+version: 2.2.0
 ---
 
 # Koi PoV deliverables (MCP-backed, multi-tenant)
@@ -46,9 +46,17 @@ Five rules, in priority order. They override style, length and completeness.
 ## Credentials
 
 **Never ask for, accept, or handle a Koi API key (or any credential) in the
-conversation.** If `koi_ping` reports NOT CONFIGURED or AUTH FAILED, direct the
-operator to the `KOI_API_KEY[_<ALIAS>]` entries in the MCP server's env block
-(`claude_desktop_config.json`) and to restart Claude. Then stop until it works.
+conversation.** Tenants are added from a terminal, key prompted with hidden
+input and stored in the OS credential store:
+
+    koi-pov-mcp tenants add <alias>
+
+It applies immediately, no restart. If `koi_ping` fails or a tenant is
+missing, give the operator that exact command (with the venv path on Windows:
+`%USERPROFILE%\.koi-pov-mcp\venv\Scripts\koi-pov-mcp.exe`) and wait until
+`koi_tenants` / `koi_ping` confirm before continuing. If the operator pastes a
+key in the chat anyway, do not use it, tell them to rotate it in the Koi
+console, and point them back to the command.
 
 ## Workflow
 
