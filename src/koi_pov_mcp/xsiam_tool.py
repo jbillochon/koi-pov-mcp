@@ -4,59 +4,53 @@ shared FastMCP instance (see server.py bottom)."""
 from __future__ import annotations
 
 import json
-import os
-import subprocess
-import sys
 from datetime import datetime, timezone
-from pathlib import Path
 
-from . import secrets
+from . import dialog, secrets
 from .client import KoiClient
 from .xsiam import XsiamClient, XsiamError, correlate
 
 
 def register(mcp, resolve_tenant, tenant_dir):
+    def _xsiam_ping(alias: str) -> str:
+        x = secrets.xsiam_get(alias)
+        if not x:
+            return "No XSIAM credentials found after save (unexpected)."
+        try:
+            XsiamClient(x["api_url"], x["key_id"], x["key"],
+                        advanced=x.get("advanced", False)).ping()
+        except XsiamError as exc:
+            return f"XSIAM connectivity check failed: {exc}"
+        return "XSIAM connectivity check: OK."
+
     @mcp.tool()
     def xsiam_tenant_add(tenant: str = "default") -> str:
         """Link an XSIAM tenant to a Koi tenant, from the Claude interface.
-        Opens a native dialog on the operator's machine with three fields:
-        API URL (the tenant's api- FQDN), API Key ID, and the API key (masked),
-        plus an 'advanced key' checkbox. Everything is stored locally (key in
-        the OS credential store); nothing transits through the conversation.
+
+        Opens a credential page in the operator's browser with three fields:
+        API URL (the tenant's api- FQDN), API Key ID, and the API key
+        (masked), plus an 'advanced key' checkbox for hashed authentication.
+        Everything is stored locally (key in the OS credential store);
+        nothing transits through the conversation.
 
         Use when the operator wants XSIAM cross-referencing on a tenant that
-        has no XSIAM link yet (koi_tenants shows xsiam_linked). Connectivity
-        is tested automatically on success. Never ask for XSIAM credentials
-        in chat."""
+        has no link yet (koi_tenants shows xsiam_linked). Tell them a browser
+        tab is opening, and if the result mentions a URL, relay it verbatim:
+        that link is how they finish if the browser did not open. The page
+        expires after 5 minutes. Connectivity is tested on success.
+        """
         resolved = resolve_tenant(tenant)
         if isinstance(resolved, dict):
             return resolved.get("error", "unknown error")
         alias, _ = resolved
 
-        python = sys.executable
-        if os.name == "nt":
-            pythonw = Path(python).with_name("pythonw.exe")
-            if pythonw.exists():
-                python = str(pythonw)
-        try:
-            proc = subprocess.run(
-                [python, "-m", "koi_pov_mcp.gui", "xsiam", alias],
-                capture_output=True, text=True, timeout=260,
+        result = dialog.launch("xsiam", alias)
+        if result["code"] != 0:
+            return dialog.describe(
+                result, alias, "XSIAM credential",
+                f"koi-pov-mcp xsiam add {alias} --test",
             )
-        except subprocess.TimeoutExpired:
-            return "Dialog timed out with no input. Nothing was saved."
-
-        if proc.returncode == 0:
-            return f"XSIAM tenant linked to '{alias}'. " + _xsiam_ping(alias)
-        if proc.returncode == 2:
-            return "Cancelled by the operator. Nothing was saved."
-        if proc.returncode == 3:
-            return (
-                "No graphical dialog available (tkinter missing). Fallback: "
-                f"run in a terminal: koi-pov-mcp xsiam add {alias}"
-            )
-        detail = (proc.stderr or "").strip()
-        return f"Dialog failed (exit {proc.returncode}). {detail or 'Nothing was saved.'}"
+        return f"XSIAM tenant linked to '{alias}'. " + _xsiam_ping(alias)
 
     @mcp.tool()
     def xsiam_correlate(tenant: str = "default", days: int = 30) -> dict:
@@ -68,7 +62,8 @@ def register(mcp, resolve_tenant, tenant_dir):
         the deliverable workflow. If no XSIAM tenant is linked, offer
         xsiam_tenant_add. Coverage gaps (koi_only / xsiam_only) are deployment
         facts for the operator; present them carefully, never as customer
-        blame."""
+        blame, and never imply causality between a Koi finding and an XSIAM
+        incident: co-presence on a host is co-presence."""
         resolved = resolve_tenant(tenant)
         if isinstance(resolved, dict):
             return resolved
@@ -80,7 +75,7 @@ def register(mcp, resolve_tenant, tenant_dir):
                 "tenant": alias,
                 "error": (
                     "No XSIAM tenant linked to this Koi tenant. "
-                    "Use xsiam_tenant_add to link one (native dialog)."
+                    "Use xsiam_tenant_add to link one."
                 ),
             }
         try:
@@ -99,16 +94,5 @@ def register(mcp, resolve_tenant, tenant_dir):
         with open(out, "w", encoding="utf-8") as fh:
             json.dump(payload, fh, indent=2, ensure_ascii=False)
         return {"tenant": alias, "correlation_path": str(out), **payload}
-
-    def _xsiam_ping(alias: str) -> str:
-        x = secrets.xsiam_get(alias)
-        if not x:
-            return "No XSIAM credentials found after save (unexpected)."
-        try:
-            XsiamClient(x["api_url"], x["key_id"], x["key"],
-                        advanced=x.get("advanced", False)).ping()
-        except XsiamError as exc:
-            return f"XSIAM connectivity check failed: {exc}"
-        return "XSIAM connectivity check: OK."
 
     return xsiam_tenant_add, xsiam_correlate

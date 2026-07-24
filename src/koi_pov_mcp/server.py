@@ -1,25 +1,22 @@
 """
 koi-pov-mcp server (stdio), multi-tenant.
 
-See module docstrings of secrets/ti_tool/render_tool/xsiam_tool for details.
-Credentials never transit through the chat; per-tenant environment under
-<workdir>/<alias>/: pov_report.json, history/, enrichment.json,
+See module docstrings of secrets/dialog/ti_tool/render_tool/xsiam_tool for
+details. Credentials never transit through the chat; per-tenant environment
+under <workdir>/<alias>/: pov_report.json, history/, enrichment.json,
 xsiam_correlation.json, deliverables/.
 """
 
 from __future__ import annotations
 
 import json
-import os
-import subprocess
-import sys
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
-from . import render_tool, secrets, ti_tool, xsiam_tool
+from . import dialog, render_tool, secrets, ti_tool, xsiam_tool
 from .client import KoiAuthError, KoiAPIError, KoiClient
 from .collector import PoVCollector, PoVMeta, PoVReport
 from .diffing import compute_whats_new
@@ -40,11 +37,19 @@ DOMAINS = {
 }
 
 ADD_HINT = (
-    "Add a tenant with the koi_tenant_add tool (opens a native dialog on the "
-    "operator's machine; the key never transits through the conversation), "
-    "or from a terminal with: koi-pov-mcp tenants add <alias>. Both apply "
-    "immediately, no restart. Never paste keys in the conversation."
+    "Add a tenant with the koi_tenant_add tool: it opens a credential page in "
+    "the operator's browser (the key goes straight to the OS credential store "
+    "and never transits through the conversation). Terminal alternative: "
+    "koi-pov-mcp tenants add <alias>. Both apply immediately, no restart. "
+    "Never paste keys in the conversation."
 )
+
+
+def _cli_hint(alias: str) -> str:
+    return (
+        f"koi-pov-mcp tenants add {alias} --test "
+        r"(Windows: %USERPROFILE%\.koi-pov-mcp\venv\Scripts\koi-pov-mcp.exe)"
+    )
 
 
 def _resolve_tenant(tenant: str) -> tuple[str, dict[str, str]] | dict:
@@ -130,7 +135,7 @@ def _snapshots(alias: str) -> list[Path]:
 
 
 def _report_json(alias: str) -> dict:
-    """Aggregated report dict + derived + enrichment + xsiam. Shared by the
+    """Aggregated report + derived + enrichment + xsiam. Shared by the
     pov_report_json tool and render_deliverables."""
     report = _load_report(alias)
     data = asdict(report)
@@ -186,39 +191,30 @@ def _collect_one(alias, creds, wanted, max_pages, activity_days) -> dict:
 
 @mcp.tool()
 def koi_tenant_add(alias: str, base_url: str = "") -> str:
-    """Add or update a Koi tenant from the Claude interface. Creates the
-    tenant's dedicated environment (data, history, deliverables). Opens a
-    native dialog on the operator's machine for the API key (masked input,
-    straight to the OS credential store, never through the conversation).
-    Connectivity is tested automatically. Use when the operator says e.g.
-    "add the acme tenant" in any language; ask for the alias if missing;
-    tell them to look for the dialog window. Auto-cancels after 3 minutes."""
+    """Add or update a Koi tenant from the Claude interface, and create its
+    dedicated environment (data, history, deliverables).
+
+    Opens a credential page in the operator's default browser on their own
+    machine. They paste the Koi API key there; it goes straight to the OS
+    credential store. The key never transits through the conversation and
+    this tool never returns it. Connectivity is tested automatically.
+
+    Use when the operator says e.g. "add a tenant" in any language; ask for a
+    short alias if they did not give one. Tell them a browser tab is opening.
+    If the result mentions a URL, relay it verbatim: their browser may not
+    have opened automatically, and that link is how they finish. The page
+    expires after 5 minutes.
+    """
     alias = (alias or "").strip().lower()
     if not secrets.ALIAS_RE.match(alias):
         return (f"Invalid alias '{alias}': lowercase letters, digits, '-', '_', "
                 "max 40 chars, must start alphanumeric.")
-    python = sys.executable
-    if os.name == "nt":
-        pythonw = Path(python).with_name("pythonw.exe")
-        if pythonw.exists():
-            python = str(pythonw)
-    try:
-        proc = subprocess.run(
-            [python, "-m", "koi_pov_mcp.gui", "koi", alias, base_url],
-            capture_output=True, text=True, timeout=200,
-        )
-    except subprocess.TimeoutExpired:
-        return "Dialog timed out with no input. Nothing was saved."
-    if proc.returncode == 0:
-        _tenant_dir(alias)
-        return f"Tenant '{alias}' saved in the OS credential store. " + _ping_alias(alias)
-    if proc.returncode == 2:
-        return "Cancelled by the operator. Nothing was saved."
-    if proc.returncode == 3:
-        return ("No graphical dialog available (tkinter missing). Fallback: "
-                f"run in a terminal: koi-pov-mcp tenants add {alias}")
-    detail = (proc.stderr or "").strip()
-    return f"Dialog failed (exit {proc.returncode}). {detail or 'Nothing was saved.'}"
+
+    result = dialog.launch("koi", alias, base_url)
+    if result["code"] != 0:
+        return dialog.describe(result, alias, "API key", _cli_hint(alias))
+    _tenant_dir(alias)
+    return f"Tenant '{alias}' saved in the OS credential store. " + _ping_alias(alias)
 
 
 @mcp.tool()
