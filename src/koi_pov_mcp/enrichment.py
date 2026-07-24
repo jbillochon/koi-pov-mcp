@@ -32,37 +32,73 @@ NVD_DELAY_UNAUTH = 6.5
 NVD_DELAY_AUTH = 1.2
 
 
-# Koi finding identifiers to MITRE ATT&CK techniques. Kept explicit so that
-# every technique in a report is one a human chose, not one a model produced.
+# Koi finding identifiers to MITRE ATT&CK techniques.
+#
+# Curated by hand on purpose: every technique that reaches a customer document
+# must trace back to a decision a human made, not to a model's association.
+# Entries below the first block were added from `unmapped_findings` observed on
+# real tenants; that list is the intended way to grow this table.
 FINDING_TO_MITRE: dict[str, list[str]] = {
+    # Malicious / compromised supply chain
     "malware_detected": ["T1195.002"],
     "malicious_activity_detected": ["T1195.002", "T1059"],
     "associated_with_malicious_campaign": ["T1195.002"],
     "removed_from_marketplace": ["T1195.002"],
     "transfer_of_ownership": ["T1195.002"],
-    "data_exfiltration": ["T1567.002"],
+    "typosquatting": ["T1195.002"],
+    "unverified_publisher": ["T1195.002"],
+    "individual_publisher": ["T1195.002"],
+    "missing_provenance": ["T1195.002"],
+    "repository_created_after_item_publish_date": ["T1195.002"],
+    "unpopular_github_repository": ["T1195.002"],
+    "publisher_email_in_compromised_list": ["T1586.002", "T1195.002"],
+
+    # Vulnerable / unmaintained dependencies
+    "vulnerable_dependency": ["T1195.001"],
+    "contains_vulnerability_cvss_critical": ["T1195.001"],
+    "contains_vulnerability_cvss_high": ["T1195.001"],
+    "unmaintained_item": ["T1195.001"],
+    "vulnerable_to_remote_code_execution": ["T1203", "T1059"],
+    "vulnerable_to_mitm": ["T1557"],
+
+    # Execution
+    "code_execution_permissions": ["T1059"],
+    "has_auto_execution_script": ["T1059"],
+    "contains_binary_executable": ["T1027.009"],
+    "obfuscated_code": ["T1027"],
+
+    # Credential access
     "credential_access": ["T1555.005", "T1552.001"],
     "secrets_in_code": ["T1552.001"],
     "reads_credentials": ["T1555"],
-    "broad_host_permissions": ["T1176"],
-    "code_execution_permissions": ["T1059"],
-    "network_interception_permissions": ["T1557"],
-    "bypasses_network_control": ["T1090"],
-    "external_communication": ["T1071.001"],
+    "no_authentication": ["T1078"],
+
+    # Collection
     "clipboard_access": ["T1115"],
     "screen_capture": ["T1113"],
-    "obfuscated_code": ["T1027"],
-    "typosquatting": ["T1195.002"],
-    "vulnerable_dependency": ["T1195.001"],
-    "unverified_publisher": ["T1195.002"],
-    "individual_publisher": ["T1195.002"],
     "collection_of_pii": ["T1119"],
+    "collection_of_personally_identifiable_information": ["T1119", "T1005"],
+    "collection_of_location_data": ["T1119"],
+
+    # Discovery / reconnaissance
+    "performs_ip_fingerprinting": ["T1590.005"],
+
+    # Command and control / exfiltration
+    "data_exfiltration": ["T1567.002"],
+    "external_communication": ["T1071.001"],
     "unrestricted_network_access": ["T1071"],
-    "no_authentication": ["T1078"],
+    "bypasses_network_control": ["T1090"],
+    "network_interception_permissions": ["T1557"],
+    "communication_with_expired_domain": ["T1584.001", "T1071.001"],
+
+    # Permissions / footprint
+    "broad_host_permissions": ["T1176"],
 }
 
 MITRE_NAMES: dict[str, str] = {
+    "T1005": "Data from Local System",
     "T1027": "Obfuscated Files or Information",
+    "T1027.009": "Embedded Payloads",
     "T1059": "Command and Scripting Interpreter",
     "T1059.004": "Unix Shell",
     "T1071": "Application Layer Protocol",
@@ -75,11 +111,15 @@ MITRE_NAMES: dict[str, str] = {
     "T1176": "Browser Extensions",
     "T1195.001": "Compromise Software Dependencies and Development Tools",
     "T1195.002": "Compromise Software Supply Chain",
+    "T1203": "Exploitation for Client Execution",
     "T1552.001": "Credentials In Files",
     "T1555": "Credentials from Password Stores",
     "T1555.005": "Password Managers",
     "T1557": "Adversary-in-the-Middle",
     "T1567.002": "Exfiltration to Cloud Storage",
+    "T1584.001": "Compromise Infrastructure: Domains",
+    "T1586.002": "Compromise Accounts: Email Accounts",
+    "T1590.005": "Gather Victim Network Information: IP Addresses",
 }
 
 
@@ -111,7 +151,7 @@ def extract_cve_ids(report: dict, limit: int = 20) -> list[str]:
 
 def fetch_cve(cve_id: str, timeout: int = 20) -> dict | None:
     """Fetch one CVE record from the NVD."""
-    headers = {"User-Agent": "koi-pov-mcp/0.5"}
+    headers = {"User-Agent": "koi-pov-mcp/0.7"}
     api_key = os.environ.get("NVD_API_KEY", "")
     if api_key:
         headers["apiKey"] = api_key
