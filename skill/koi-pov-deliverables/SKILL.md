@@ -1,15 +1,16 @@
 ---
 name: koi-pov-deliverables
-description: This skill should be used for anything related to running a Koi (Cortex AES) Proof of Value: adding a tenant, syncing tenant data, giving a state of play, preparing a follow-up meeting (what's new), and producing the customer-facing wrap-up (report and deck). Triggers include "add a tenant", "sync tenant X", "sync all my Koi tenants", "status of tenant X", "what's new on tenant X", "prepare my PoV follow-up", "generate the PoV deliverables", "write the PoV report", "build the restitution deck", "restitution de PoV", in any language.
-version: 2.4.0
+description: This skill should be used for anything related to running a Koi (Cortex AES) Proof of Value: adding a tenant, linking an XSIAM tenant, syncing tenant data, giving a state of play, preparing a follow-up meeting (what's new), TI enrichment, and producing the customer-facing wrap-up (Word report, PDF, slide deck). Triggers include "add a tenant", "link XSIAM", "sync tenant X", "sync all my Koi tenants", "status of tenant X", "what's new on tenant X", "prepare my PoV follow-up", "generate the report / deck / word / pdf for tenant X", "restitution de PoV", in any language.
+version: 2.6.0
 ---
 
 # Koi PoV operations and deliverables (MCP-backed, multi-tenant)
 
 Run Koi Proofs of Value through the **koi-pov MCP server**: dedicated
-environment per tenant, data sync, follow-up preparation, and the two closing
-artefacts (a **detailed report** and a **restitution deck**, both in English,
-structured around the success criteria agreed at kickoff).
+environment per tenant, data sync, TI enrichment, optional XSIAM
+cross-referencing, follow-up preparation, and rendered deliverables
+(report.docx, deck.pptx, report.pdf), all in English, structured around the
+success criteria agreed at kickoff.
 
 The deliverable answers one question for the decision-maker:
 
@@ -17,86 +18,93 @@ The deliverable answers one question for the decision-maker:
 
 ## Natural-language command mapping
 
-The operator speaks in any language; map intent to tools:
-
 | Operator says (any phrasing/language) | Do |
 |---|---|
-| "Add a (new) tenant" | Ask for a short alias if not given (e.g. acme). Call `koi_tenant_add(alias)`; a native dialog opens on their machine for the key. Never ask for the key in chat. |
-| "Sync tenant xyz" / "synchronise les donnees de xyz" | `koi_collect(tenant="xyz")`. Offer `domains=[...]` on large tenants. |
-| "Sync all my tenants" | Warn about duration, then `koi_sync_all()`. Summarise per-tenant results and failures. |
-| "State of play / etat des lieux of xyz" | `pov_status(tenant="xyz")` + `pov_report_json`, narrate: stage, coverage, risk picture, governance, gaps and warnings. |
-| "What's new on xyz / prepare my follow-up meeting" | `koi_whats_new(tenant="xyz")` (use `since=` if they name a date). Turn deltas into meeting talking points. |
-| "Generate the report / deck / deliverables for xyz" | Full deliverable workflow below on that tenant. |
-| "Start over on xyz / new PoV" | Confirm explicitly, then `pov_reset(tenant="xyz", confirm=true)`. |
+| "Add a (new) tenant" | Ask for a short alias if not given. `koi_tenant_add(alias)`: native dialog for the key. Never ask for the key in chat. |
+| "Link / add an XSIAM tenant (to X)" | `xsiam_tenant_add(tenant)`: native dialog with API URL, Key ID, key, advanced checkbox. Never ask for credentials in chat. |
+| "Sync tenant xyz" | `koi_collect(tenant="xyz")`; offer `domains=[...]` on large tenants. |
+| "Sync all my tenants" | Warn about duration, then `koi_sync_all()`. |
+| "State of play of xyz" | `pov_status` + `pov_report_json`; narrate stage, coverage, risk, governance, gaps. |
+| "What's new on xyz / prepare my follow-up" | `koi_whats_new(tenant, since?)`; turn deltas into talking points. |
+| "Enrich with threat intel" | `koi_enrich(tenant)`; warn about NVD duration if many CVEs. |
+| "Cross-reference with XSIAM" | `xsiam_correlate(tenant)`; if not linked, offer `xsiam_tenant_add` first. |
+| "Generate the report / deck / word / pdf for X" | Deliverable workflow below, ending on `render_deliverables`. |
+| "Start over on X" | Confirm explicitly, then `pov_reset(tenant, confirm=true)`. |
 
 If several tenants are configured and the operator did not name one, ask
-(`koi_tenants` gives the list). Never guess.
+(`koi_tenants`). Never guess.
 
 ## Non-negotiable rules
 
-1. **Never invent.** Every figure comes from `pov_report_json` /
-   `koi_whats_new` for the selected tenant or from material the operator
-   provides. Anything missing stays a visible `[[TO BE PROVIDED: ...]]`.
+1. **Never invent.** Every figure comes from `pov_report_json`,
+   `koi_whats_new`, or operator-provided material. Anything missing stays a
+   visible `[[TO BE PROVIDED: ...]]`.
 2. **Evidence before assertion.** A result with no evidence in the collected
    data is an observation, and must be labelled as one.
-3. **A zero is not the same as "not measured".** An empty field, an
-   uncollected domain, or an entry in `warnings` means *not measured*. Check
-   `pov_status` `missing_domains` and `warnings` before writing any zero.
-4. **One tenant per deliverable.** Pass `tenant=` on every call; never blend
-   figures from two tenants; refuse cross-customer comparisons (PoV data is
-   confidential to each customer).
+3. **A zero is not the same as "not measured".** Empty field, uncollected
+   domain, or `warnings` entry = not measured. Check `missing_domains` and
+   `warnings` before writing any zero.
+4. **One tenant per deliverable.** Pass `tenant=` everywhere; never blend
+   tenants; refuse cross-customer comparisons.
 5. **Deliverables in English, conversation in the operator's language.**
 
 ## Credentials
 
-**Never ask for, accept, or handle a Koi API key in the conversation.**
-Adding or fixing a key goes through `koi_tenant_add` (native dialog) or, if
-no GUI is available, `koi-pov-mcp tenants add <alias>` in a terminal. Both
-apply immediately. If the operator pastes a key in the chat anyway, do not
-use it, tell them to rotate it in the Koi console, and rerun the dialog.
+**Never ask for, accept, or handle any API key or credential (Koi or XSIAM)
+in the conversation.** Everything goes through the native dialogs
+(`koi_tenant_add`, `xsiam_tenant_add`) or the CLI (`koi-pov-mcp tenants add`,
+`koi-pov-mcp xsiam add`), applied immediately. If the operator pastes a
+credential in the chat anyway, do not use it, tell them to rotate it, and
+rerun the dialog.
+
+## Threat intel language rules
+
+- **Hierarchy: KEV > EPSS > CVSS.** Lead with exploitation fact (KEV), then
+  probability (EPSS), then severity (CVSS). Never present a CVSS score alone
+  as "the risk".
+- **Date the intel.** Every TI statement in a deliverable carries
+  "threat intel as of <fetched_at>" from the enrichment payload.
+- **Version caveat.** OSV matches are exact name@version; anything else gets
+  "version match not verified". `unmapped_findings` are for the operator
+  (mapping backlog), never for the customer document.
 
 ## Follow-up meeting preparation (koi_whats_new)
 
-The diff returns **changes only**: deltas and newly appeared items between
-the latest snapshot and a baseline (previous sync, or `since=` date).
+Changes only: deltas and newly appeared items vs the baseline. Sync first if
+stale. Narrative order: progress (remediated, new policies, agent blocks),
+new exposure (new critical items, ungoverned growth), coverage evolution.
+Unchanged figures are omitted by design: not news. `baseline: null` = first
+sync: present the current state, no delta story. New `warnings` stay in the
+operator gap list, never in the customer document.
 
-- Sync first if the data is stale, then diff.
-- Build the narrative from: progress (newly remediated, new policies, agent
-  blocks), new exposure (new critical/high items, ungoverned growth), and
-  coverage evolution (devices, items discovered).
-- Unchanged figures are omitted by design: do not present them as news.
-- `baseline: null` means first sync: there is no delta story; say so and
-  present the current state instead.
-- New `warnings` are collection problems, not customer findings; keep them in
-  the operator-facing gap list, never in the customer document.
+## XSIAM cross-referencing
+
+`xsiam_correlate` returns coverage overlap (Koi vs XSIAM managed hosts) and
+XSIAM incidents on Koi-known hosts. Facts for the "so what": incidents
+landing on hosts where Koi sees risky items. Coverage gaps (koi_only /
+xsiam_only) are deployment observations for the operator; present them
+constructively, never as customer blame. Item-to-alert joins are not yet
+available: do not imply causality between a Koi finding and an XSIAM
+incident; co-presence on a host is co-presence, nothing more.
 
 ## Deliverable workflow (report + deck)
 
-0. **Tenant**: `koi_tenants`, confirm the alias, `koi_ping(tenant=...)`.
-1. **Metadata**: `set_pov_meta(tenant=..., customer_name=..., ...)`.
-2. **Sync**: `koi_collect(tenant=...)`, by domain on large tenants.
-3. **Gap list first**: from `pov_status` and `pov_report_json`: success
-   criteria with no matching evidence; `missing_domains` and `warnings`;
-   claimed improvements with no baseline. Show it to the operator, then
-   proceed with placeholders; repeat the list at the end.
-4. **Optional enrichment**: ask in this order: threat-intel enrichment?
-   XSIAM cross-referencing? If the tools are not yet available, record the
-   answer and mark the sections `[[TO BE PROVIDED: ...]]`.
-5. **Write**: report first (executive summary written last), then the deck as
-   a 12-16 slide synthesis. Frame with `stage`: discovery tenant = visibility
-   story; governed tenant = outcomes story. Structure: scope and coverage,
-   success criteria scorecard, discovery findings, risk analysis, governance
-   and remediation outcomes, agentic runtime activity, recommendations,
-   appendix.
-6. **Render and hand back**: write files into the tenant's `deliverables/`
-   directory (path in `pov_status`). If a `render_deliverables` tool is
-   available, use it and report exactly which formats (PPTX, DOCX, PDF) it
-   produced. If not, deliver Markdown there and state explicitly which
-   formats were not rendered and why. End on the gap list and what needs the
-   operator's decision.
-
-## Regenerating over existing output
-
-Before overwriting a deliverable file, check whether it was edited by hand
-since it was generated. If it was, say so and save the old version as `*.bak`
-rather than silently replacing an evening of the operator's edits.
+0. **Tenant**: `koi_tenants`, confirm the alias, `koi_ping`.
+1. **Metadata**: `set_pov_meta`.
+2. **Sync**: `koi_collect`, by domain on large tenants.
+3. **Gap list first**: success criteria with no evidence; `missing_domains`
+   and `warnings`; improvements with no baseline. Show it, then proceed with
+   placeholders; repeat at the end.
+4. **Optional enrichment**, ask in order: threat intel (`koi_enrich`)?
+   XSIAM cross-referencing (`xsiam_correlate`, offer `xsiam_tenant_add` if
+   unlinked)? Record refusals; mark wanted-but-unavailable sections
+   `[[TO BE PROVIDED: ...]]`.
+5. **Write the narrative** from `pov_report_json` only: executive summary
+   (last), success criteria verdicts ({criterion, verdict, evidence}, every
+   evidence traceable), recommendations. Frame with `stage`: discovery =
+   visibility story, governed = outcomes story.
+6. **Render**: `render_deliverables(tenant, formats, executive_summary,
+   recommendations, success_criteria)`. Report exactly `produced` vs
+   `skipped` with reasons; skipped formats are announced, never glossed
+   over. Before re-rendering over hand-edited files, say so and keep a
+   `.bak`. End on the gap list and what needs the operator's decision.

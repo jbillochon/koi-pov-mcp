@@ -1,20 +1,10 @@
 """
 koi-pov-mcp server (stdio), multi-tenant.
 
-Exposes Koi PoV collection as MCP tools for Claude Desktop / Claude Code.
-Credentials never transit through the chat: tenants are added through the
-koi_tenant_add tool (native dialog) or the `koi-pov-mcp tenants` CLI, stored
-in the OS credential store; env vars (KOI_API_KEY[_<ALIAS>]) remain supported
-and take precedence. Store changes apply immediately, no restart.
-
-Per-tenant environment under <workdir>/<alias>/ :
-  pov_report.json      current aggregated state (single source of truth)
-  history/<ts>.json    snapshot after every sync, used for what's-new diffs
-  enrichment.json      deterministic TI facts (NVD CVEs, curated MITRE map)
-  deliverables/        where report/deck files for this tenant are written
-
-Tenants never share state; a deliverable is always built from exactly one
-tenant.
+See module docstrings of secrets/ti_tool/render_tool/xsiam_tool for details.
+Credentials never transit through the chat; per-tenant environment under
+<workdir>/<alias>/: pov_report.json, history/, enrichment.json,
+xsiam_correlation.json, deliverables/.
 """
 
 from __future__ import annotations
@@ -29,14 +19,13 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
-from . import secrets, ti_tool
+from . import render_tool, secrets, ti_tool, xsiam_tool
 from .client import KoiAuthError, KoiAPIError, KoiClient
 from .collector import PoVCollector, PoVMeta, PoVReport
 from .diffing import compute_whats_new
 
 mcp = FastMCP("koi-pov")
 
-# Domain name -> collector method name. Order matters for collect order.
 DOMAINS = {
     "devices": "collect_devices",
     "groups": "collect_groups",
@@ -59,7 +48,6 @@ ADD_HINT = (
 
 
 def _resolve_tenant(tenant: str) -> tuple[str, dict[str, str]] | dict:
-    """Return (alias, creds) or an error dict ready to hand back to the model."""
     alias = (tenant or "default").strip().lower()
     if not secrets.ALIAS_RE.match(alias):
         return {"error": f"Invalid tenant alias '{tenant}'."}
@@ -94,11 +82,6 @@ def _ping_alias(alias: str) -> str:
     return f"OK: authenticated against the Koi API for tenant '{alias}'."
 
 
-# ---------------------------------------------------------------------- #
-# Per-tenant state
-# ---------------------------------------------------------------------- #
-
-
 def _workdir() -> Path:
     return secrets.store_dir()
 
@@ -112,7 +95,6 @@ def _tenant_dir(alias: str) -> Path:
 
 def _report_path(alias: str) -> Path:
     path = _tenant_dir(alias) / "pov_report.json"
-    # One-time migration from the single-tenant layout (v0.1)
     if alias == "default" and not path.exists():
         legacy = _workdir() / "pov_report.json"
         if legacy.exists():
@@ -144,28 +126,38 @@ def _snapshot(alias: str, report: PoVReport) -> str:
 
 
 def _snapshots(alias: str) -> list[Path]:
-    hist = _tenant_dir(alias) / "history"
-    return sorted(hist.glob("*.json"))
+    return sorted((_tenant_dir(alias) / "history").glob("*.json"))
 
 
-# ---------------------------------------------------------------------- #
-# Collection core (shared by koi_collect and koi_sync_all)
-# ---------------------------------------------------------------------- #
+def _report_json(alias: str) -> dict:
+    """Aggregated report dict + derived + enrichment + xsiam. Shared by the
+    pov_report_json tool and render_deliverables."""
+    report = _load_report(alias)
+    data = asdict(report)
+    data["tenant"] = alias
+    data["derived"] = {
+        "stage": report.stage,
+        "high_and_critical": report.high_and_critical,
+        "pending_analysis": report.pending_analysis,
+    }
+    for name, key in (("enrichment.json", "enrichment"),
+                      ("xsiam_correlation.json", "xsiam")):
+        p = _tenant_dir(alias) / name
+        if p.exists():
+            try:
+                with open(p, encoding="utf-8") as fh:
+                    data[key] = json.load(fh)
+            except (OSError, json.JSONDecodeError):
+                data[key] = {"errors": [f"{name} unreadable"]}
+    return data
 
 
-def _collect_one(
-    alias: str,
-    creds: dict[str, str],
-    wanted: list[str],
-    max_pages: int,
-    activity_days: int,
-) -> dict:
+def _collect_one(alias, creds, wanted, max_pages, activity_days) -> dict:
     report = _load_report(alias)
     coll = PoVCollector(_client_for(creds), meta=report.meta, max_pages=max_pages)
     coll.report = report
     before_warnings = len(report.warnings)
-
-    for name in DOMAINS:  # canonical order, filtered
+    for name in DOMAINS:
         if name not in wanted:
             continue
         method = getattr(coll, DOMAINS[name])
@@ -175,7 +167,6 @@ def _collect_one(
             coll._safe(name, method)
         if name not in report.collected_domains:
             report.collected_domains.append(name)
-
     path = _save_report(alias, report)
     snap_ts = _snapshot(alias, report)
     return {
@@ -196,63 +187,47 @@ def _collect_one(
 @mcp.tool()
 def koi_tenant_add(alias: str, base_url: str = "") -> str:
     """Add or update a Koi tenant from the Claude interface. Creates the
-    tenant's dedicated environment (data, history, deliverables directories).
-
-    Opens a native dialog window on the operator's machine where they paste
-    the API key (masked input). The key goes straight from that window to the
-    OS credential store; it never transits through the conversation, and this
-    tool never returns it. Connectivity is tested automatically on success.
-
-    Use this when the operator says e.g. "add the acme tenant" in any
-    language. Ask for the alias if they did not give one. Tell them to look
-    for the dialog window (it may open behind other windows). The dialog
-    auto-cancels after 3 minutes without input.
-    """
+    tenant's dedicated environment (data, history, deliverables). Opens a
+    native dialog on the operator's machine for the API key (masked input,
+    straight to the OS credential store, never through the conversation).
+    Connectivity is tested automatically. Use when the operator says e.g.
+    "add the acme tenant" in any language; ask for the alias if missing;
+    tell them to look for the dialog window. Auto-cancels after 3 minutes."""
     alias = (alias or "").strip().lower()
     if not secrets.ALIAS_RE.match(alias):
-        return (
-            f"Invalid alias '{alias}': lowercase letters, digits, '-', '_', "
-            "max 40 chars, must start alphanumeric."
-        )
-
+        return (f"Invalid alias '{alias}': lowercase letters, digits, '-', '_', "
+                "max 40 chars, must start alphanumeric.")
     python = sys.executable
     if os.name == "nt":
         pythonw = Path(python).with_name("pythonw.exe")
         if pythonw.exists():
             python = str(pythonw)
-
     try:
         proc = subprocess.run(
-            [python, "-m", "koi_pov_mcp.gui", alias, base_url],
-            capture_output=True,
-            text=True,
-            timeout=200,
+            [python, "-m", "koi_pov_mcp.gui", "koi", alias, base_url],
+            capture_output=True, text=True, timeout=200,
         )
     except subprocess.TimeoutExpired:
         return "Dialog timed out with no input. Nothing was saved."
-
     if proc.returncode == 0:
-        _tenant_dir(alias)  # provision the dedicated environment
+        _tenant_dir(alias)
         return f"Tenant '{alias}' saved in the OS credential store. " + _ping_alias(alias)
     if proc.returncode == 2:
         return "Cancelled by the operator. Nothing was saved."
     if proc.returncode == 3:
-        return (
-            "No graphical dialog available on this system (tkinter missing). "
-            f"Fallback: run in a terminal: koi-pov-mcp tenants add {alias}"
-        )
+        return ("No graphical dialog available (tkinter missing). Fallback: "
+                f"run in a terminal: koi-pov-mcp tenants add {alias}")
     detail = (proc.stderr or "").strip()
     return f"Dialog failed (exit {proc.returncode}). {detail or 'Nothing was saved.'}"
 
 
 @mcp.tool()
 def koi_tenants() -> dict:
-    """List the configured Koi tenants and whether each already has a
-    collected report. Call this first when the operator manages several PoVs,
-    and ask which tenant to work on if more than one is configured. Keys
-    themselves are never returned. To add a tenant from the Claude interface,
-    use the koi_tenant_add tool (native dialog, key never in chat)."""
+    """List configured Koi tenants: alias, source, whether a report exists,
+    snapshot count, and whether an XSIAM tenant is linked (xsiam_linked).
+    Keys are never returned. Ask which tenant to work on if more than one."""
     registry = secrets.all_tenants()
+    xsiam_linked = secrets.xsiam_list()
     tenants = []
     for alias in sorted(registry):
         report_file = _workdir() / alias / "pov_report.json"
@@ -261,11 +236,12 @@ def koi_tenants() -> dict:
             "source": registry[alias]["source"],
             "has_report": report_file.exists(),
             "snapshots": len(_snapshots(alias)) if report_file.exists() else 0,
+            "xsiam_linked": alias in xsiam_linked,
         }
         if report_file.exists():
             try:
                 entry["customer"] = PoVReport.from_json(str(report_file)).meta.customer_name
-            except Exception:  # noqa: BLE001 - listing must not fail on one bad file
+            except Exception:  # noqa: BLE001
                 entry["customer"] = "(unreadable report)"
         tenants.append(entry)
     return {"tenants": tenants, "count": len(tenants), "note": ADD_HINT}
@@ -273,18 +249,14 @@ def koi_tenants() -> dict:
 
 @mcp.tool()
 def koi_ping(tenant: str = "default") -> str:
-    """Check Koi API connectivity and key validity for one tenant.
-
-    Call this before any collection on that tenant. If it fails, offer to run
-    koi_tenant_add (re-adding overwrites the key). Never ask for the key in
-    chat.
-    """
+    """Check Koi API connectivity and key validity for one tenant. If it
+    fails, offer koi_tenant_add (re-adding overwrites the key). Never ask for
+    the key in chat."""
     resolved = _resolve_tenant(tenant)
     if isinstance(resolved, dict):
         return resolved.get("error", "unknown error") + (
             f" Configured: {resolved['configured_tenants']}"
-            if "configured_tenants" in resolved else ""
-        )
+            if "configured_tenants" in resolved else "")
     alias, _ = resolved
     return _ping_alias(alias)
 
@@ -299,10 +271,7 @@ def set_pov_meta(
     tenant_label: str = "",
 ) -> str:
     """Set PoV metadata (customer name, author, PoV window) for one tenant.
-
-    Dates are free-form strings, ISO (YYYY-MM-DD) recommended.
-    Merges into the tenant's existing report without touching collected data.
-    """
+    Dates free-form, ISO recommended. Merges without touching collected data."""
     resolved = _resolve_tenant(tenant)
     if isinstance(resolved, dict):
         return resolved.get("error", "unknown error")
@@ -326,31 +295,20 @@ def koi_collect(
     max_pages: int = 40,
     activity_days: int = 30,
 ) -> dict:
-    """Sync one Koi tenant: collect PoV evidence and merge it into that
-    tenant's pov_report.json, then snapshot it for what's-new diffs.
-
-    Use when the operator says e.g. "sync tenant xyz" in any language.
-    tenant: alias from koi_tenants. domains: subset of [devices, groups,
-    inventory, inventory_views, policies, lists, remediations, approvals,
-    alerts, agent_activity]; omit for all. max_pages: per-endpoint page cap
-    (500 items/page); lower it on big tenants for a faster first pass.
-    activity_days: window for alerts and agent sessions (agent events are
-    always capped at 24h by the API).
-
-    Runs synchronously; a full collection on a large tenant can take several
-    minutes because of the API rate limit (30 req/min/route). Failures in one
-    domain do not stop the others; they are reported in `warnings`.
-    """
+    """Sync one Koi tenant (collect + snapshot). Use for "sync tenant xyz" in
+    any language. domains subset of [devices, groups, inventory,
+    inventory_views, policies, lists, remediations, approvals, alerts,
+    agent_activity]; omit for all. Synchronous; rate limit 30 req/min/route,
+    prefer one or two domains at a time on large tenants. Domain failures
+    land in `warnings` without stopping the others."""
     resolved = _resolve_tenant(tenant)
     if isinstance(resolved, dict):
         return resolved
     alias, creds = resolved
-
     wanted = domains or list(DOMAINS)
     unknown = [d for d in wanted if d not in DOMAINS]
     if unknown:
         return {"error": f"Unknown domain(s): {unknown}", "valid_domains": list(DOMAINS)}
-
     return _collect_one(alias, creds, wanted, max_pages, activity_days)
 
 
@@ -360,31 +318,22 @@ def koi_sync_all(
     max_pages: int = 40,
     activity_days: int = 30,
 ) -> dict:
-    """Sync every configured tenant, sequentially. Use when the operator says
-    e.g. "sync all my Koi tenants" in any language.
-
-    Each tenant is collected and snapshotted independently; a failure on one
-    tenant does not stop the others. With several tenants this can take a
-    while (rate limit is per tenant key, but the loop is sequential); consider
-    domains=[...] or a lower max_pages for a quick refresh. Warn the operator
-    about the duration before launching a full sync of many tenants.
-    """
+    """Sync every configured tenant sequentially ("sync all my Koi tenants").
+    Independent per tenant; one failure does not stop the rest. Warn the
+    operator about the duration before a full sync of many tenants."""
     registry = secrets.all_tenants()
     if not registry:
         return {"error": f"NOT CONFIGURED: no Koi tenant found. {ADD_HINT}"}
-
     wanted = domains or list(DOMAINS)
     unknown = [d for d in wanted if d not in DOMAINS]
     if unknown:
         return {"error": f"Unknown domain(s): {unknown}", "valid_domains": list(DOMAINS)}
-
     results: dict[str, dict] = {}
     for alias in sorted(registry):
         try:
-            results[alias] = _collect_one(
-                alias, registry[alias], wanted, max_pages, activity_days
-            )
-        except Exception as exc:  # noqa: BLE001 - one tenant must not sink the rest
+            results[alias] = _collect_one(alias, registry[alias], wanted,
+                                          max_pages, activity_days)
+        except Exception as exc:  # noqa: BLE001
             results[alias] = {"tenant": alias, "error": f"{type(exc).__name__}: {exc}"}
     return {
         "synced": [a for a, r in results.items() if "error" not in r],
@@ -395,29 +344,19 @@ def koi_sync_all(
 
 @mcp.tool()
 def koi_whats_new(tenant: str = "default", since: str = "") -> dict:
-    """What changed on one tenant since a previous sync: the raw material for
-    a PoV follow-up meeting. Use when the operator asks e.g. "what's new on
-    tenant abcd" or "prepare my next follow-up" in any language.
-
-    Compares the latest snapshot against a baseline: the snapshot taken just
-    before the most recent sync, or, if `since` is given (ISO date or
-    YYYYMMDD), the last snapshot at or before that date. Returns deltas and
-    newly appeared items only; unchanged figures are omitted on purpose and
-    must not be presented as news. If there is no baseline yet (first sync),
-    say so: everything is new and no delta story exists.
-    """
+    """What changed since a previous sync: follow-up meeting material.
+    Baseline = previous snapshot, or last snapshot at/before `since`
+    (ISO/YYYYMMDD). Deltas and new items only; unchanged figures are omitted
+    and must not be presented as news. baseline null = first sync, no delta
+    story."""
     resolved = _resolve_tenant(tenant)
     if isinstance(resolved, dict):
         return resolved
     alias, _ = resolved
-
     snaps = _snapshots(alias)
     if not snaps:
-        return {
-            "tenant": alias,
-            "error": "No snapshot yet. Run koi_collect first (each sync creates one).",
-        }
-
+        return {"tenant": alias,
+                "error": "No snapshot yet. Run koi_collect first (each sync creates one)."}
     current_path = snaps[-1]
     baseline_path: Path | None = None
     if since:
@@ -425,62 +364,46 @@ def koi_whats_new(tenant: str = "default", since: str = "") -> dict:
         candidates = [s for s in snaps[:-1] if s.stem[:8] <= stamp]
         baseline_path = candidates[-1] if candidates else None
         if baseline_path is None:
-            return {
-                "tenant": alias,
-                "error": f"No snapshot at or before '{since}'. "
-                         f"Oldest is {snaps[0].stem}.",
-                "available_snapshots": [s.stem for s in snaps],
-            }
+            return {"tenant": alias,
+                    "error": f"No snapshot at or before '{since}'. Oldest is {snaps[0].stem}.",
+                    "available_snapshots": [s.stem for s in snaps]}
     elif len(snaps) >= 2:
         baseline_path = snaps[-2]
-
     if baseline_path is None:
-        return {
-            "tenant": alias,
-            "baseline": None,
-            "note": (
-                "First collection: no baseline to diff against. Everything in "
-                "pov_report_json is 'new'; do not present deltas."
-            ),
-        }
-
+        return {"tenant": alias, "baseline": None,
+                "note": ("First collection: no baseline to diff against. Everything in "
+                         "pov_report_json is 'new'; do not present deltas.")}
     with open(current_path, encoding="utf-8") as fh:
         current = json.load(fh)
     with open(baseline_path, encoding="utf-8") as fh:
         baseline = json.load(fh)
-
-    return {
-        "tenant": alias,
-        "baseline": baseline_path.stem,
-        "current": current_path.stem,
-        "changes": compute_whats_new(current, baseline),
-        "available_snapshots": [s.stem for s in snaps],
-    }
+    return {"tenant": alias, "baseline": baseline_path.stem,
+            "current": current_path.stem,
+            "changes": compute_whats_new(current, baseline),
+            "available_snapshots": [s.stem for s in snaps]}
 
 
 @mcp.tool()
 def pov_status(tenant: str = "default") -> dict:
-    """State of play for one tenant: what was collected, key counts, warnings,
-    missing domains, snapshot history, enrichment presence, and where
-    deliverables go. Use when the operator asks for "an overview / etat des
-    lieux of tenant xyz", and to build the gap list before writing any
-    deliverable."""
+    """State of play for one tenant ("etat des lieux"): collected vs missing
+    domains, warnings, snapshots, enrichment and XSIAM presence, deliverables
+    path. Feeds the mandatory gap list."""
     resolved = _resolve_tenant(tenant)
     if isinstance(resolved, dict):
         return resolved
     alias, _ = resolved
     report = _load_report(alias)
-    missing = [d for d in DOMAINS if d not in report.collected_domains]
-    snaps = _snapshots(alias)
     return {
         "tenant": alias,
         "report_path": str(_report_path(alias)),
         "report_exists": _report_path(alias).exists(),
         "deliverables_path": str(_tenant_dir(alias) / "deliverables"),
         "enrichment_exists": (_tenant_dir(alias) / "enrichment.json").exists(),
-        "snapshots": [s.stem for s in snaps[-10:]],
+        "xsiam_correlation_exists": (_tenant_dir(alias) / "xsiam_correlation.json").exists(),
+        "xsiam_linked": secrets.xsiam_get(alias) is not None,
+        "snapshots": [s.stem for s in _snapshots(alias)[-10:]],
         "collected_domains": report.collected_domains,
-        "missing_domains": missing,
+        "missing_domains": [d for d in DOMAINS if d not in report.collected_domains],
         "warnings": report.warnings,
         "summary": _summary(alias, report),
     }
@@ -488,55 +411,35 @@ def pov_status(tenant: str = "default") -> dict:
 
 @mcp.tool()
 def pov_report_json(tenant: str = "default") -> dict:
-    """Return one tenant's full aggregated PoV report as JSON, including TI
-    enrichment if koi_enrich was run. This is the single source of truth for
-    that tenant's deliverables: every number must come from here or be a
-    [[TO BE PROVIDED]] placeholder. Never mix data from two tenants in one
-    deliverable."""
+    """Full aggregated report for one tenant, including 'enrichment' (TI) and
+    'xsiam' (correlation) when present. Single source of truth: every number
+    in a deliverable comes from here or stays a [[TO BE PROVIDED]]
+    placeholder. Never mix tenants."""
     resolved = _resolve_tenant(tenant)
     if isinstance(resolved, dict):
         return resolved
     alias, _ = resolved
-    report = _load_report(alias)
-    data = asdict(report)
-    data["tenant"] = alias
-    data["derived"] = {
-        "stage": report.stage,
-        "high_and_critical": report.high_and_critical,
-        "pending_analysis": report.pending_analysis,
-    }
-    enr_path = _tenant_dir(alias) / "enrichment.json"
-    if enr_path.exists():
-        try:
-            with open(enr_path, encoding="utf-8") as fh:
-                data["enrichment"] = json.load(fh)
-        except (OSError, json.JSONDecodeError):
-            data["enrichment"] = {"errors": ["enrichment.json unreadable"]}
-    return data
+    return _report_json(alias)
 
 
 @mcp.tool()
 def pov_reset(tenant: str = "default", confirm: bool = False) -> str:
-    """Delete one tenant's pov_report.json, snapshot history and enrichment to
-    start a new PoV on that tenant. Requires confirm=true. Ask the operator
-    before calling with confirm. Deliverables and other tenants are
-    untouched."""
+    """Start a new PoV on one tenant: archives pov_report.json, snapshot
+    history, enrichment and XSIAM correlation. Requires confirm=true after
+    asking the operator. Deliverables and other tenants untouched."""
     resolved = _resolve_tenant(tenant)
     if isinstance(resolved, dict):
         return resolved.get("error", "unknown error")
     alias, _ = resolved
     if not confirm:
         return "Refused: call again with confirm=true after the operator agrees."
-    p = _report_path(alias)
     moved = []
-    if p.exists():
-        backup = p.with_suffix(".json.bak")
-        p.replace(backup)
-        moved.append(str(backup))
-    enr = _tenant_dir(alias) / "enrichment.json"
-    if enr.exists():
-        enr.replace(enr.with_suffix(".json.bak"))
-        moved.append(str(enr.with_suffix(".json.bak")))
+    for name in ("pov_report.json", "enrichment.json", "xsiam_correlation.json"):
+        p = _tenant_dir(alias) / name
+        if p.exists():
+            backup = p.with_suffix(".json.bak")
+            p.replace(backup)
+            moved.append(str(backup))
     hist = _tenant_dir(alias) / "history"
     archive = _tenant_dir(alias) / "history_archive"
     if any(hist.glob("*.json")):
@@ -566,8 +469,10 @@ def _summary(alias: str, report: PoVReport) -> dict:
     }
 
 
-# TI enrichment tool (deterministic NVD + MITRE facts)
+# Optional-capability tools
 ti_tool.register(mcp, _resolve_tenant, _load_report, _tenant_dir)
+render_tool.register(mcp, _resolve_tenant, _report_json, _tenant_dir)
+xsiam_tool.register(mcp, _resolve_tenant, _tenant_dir)
 
 
 def main() -> None:
