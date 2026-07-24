@@ -10,6 +10,7 @@ and take precedence. Store changes apply immediately, no restart.
 Per-tenant environment under <workdir>/<alias>/ :
   pov_report.json      current aggregated state (single source of truth)
   history/<ts>.json    snapshot after every sync, used for what's-new diffs
+  enrichment.json      deterministic TI facts (NVD CVEs, curated MITRE map)
   deliverables/        where report/deck files for this tenant are written
 
 Tenants never share state; a deliverable is always built from exactly one
@@ -28,7 +29,7 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
-from . import secrets
+from . import secrets, ti_tool
 from .client import KoiAuthError, KoiAPIError, KoiClient
 from .collector import PoVCollector, PoVMeta, PoVReport
 from .diffing import compute_whats_new
@@ -460,9 +461,10 @@ def koi_whats_new(tenant: str = "default", since: str = "") -> dict:
 @mcp.tool()
 def pov_status(tenant: str = "default") -> dict:
     """State of play for one tenant: what was collected, key counts, warnings,
-    missing domains, snapshot history, and where deliverables go. Use when
-    the operator asks for "an overview / etat des lieux of tenant xyz", and
-    to build the gap list before writing any deliverable."""
+    missing domains, snapshot history, enrichment presence, and where
+    deliverables go. Use when the operator asks for "an overview / etat des
+    lieux of tenant xyz", and to build the gap list before writing any
+    deliverable."""
     resolved = _resolve_tenant(tenant)
     if isinstance(resolved, dict):
         return resolved
@@ -475,6 +477,7 @@ def pov_status(tenant: str = "default") -> dict:
         "report_path": str(_report_path(alias)),
         "report_exists": _report_path(alias).exists(),
         "deliverables_path": str(_tenant_dir(alias) / "deliverables"),
+        "enrichment_exists": (_tenant_dir(alias) / "enrichment.json").exists(),
         "snapshots": [s.stem for s in snaps[-10:]],
         "collected_domains": report.collected_domains,
         "missing_domains": missing,
@@ -485,10 +488,11 @@ def pov_status(tenant: str = "default") -> dict:
 
 @mcp.tool()
 def pov_report_json(tenant: str = "default") -> dict:
-    """Return one tenant's full aggregated PoV report as JSON. This is the
-    single source of truth for that tenant's deliverables: every number must
-    come from here or be a [[TO BE PROVIDED]] placeholder. Never mix data
-    from two tenants in one deliverable."""
+    """Return one tenant's full aggregated PoV report as JSON, including TI
+    enrichment if koi_enrich was run. This is the single source of truth for
+    that tenant's deliverables: every number must come from here or be a
+    [[TO BE PROVIDED]] placeholder. Never mix data from two tenants in one
+    deliverable."""
     resolved = _resolve_tenant(tenant)
     if isinstance(resolved, dict):
         return resolved
@@ -501,14 +505,22 @@ def pov_report_json(tenant: str = "default") -> dict:
         "high_and_critical": report.high_and_critical,
         "pending_analysis": report.pending_analysis,
     }
+    enr_path = _tenant_dir(alias) / "enrichment.json"
+    if enr_path.exists():
+        try:
+            with open(enr_path, encoding="utf-8") as fh:
+                data["enrichment"] = json.load(fh)
+        except (OSError, json.JSONDecodeError):
+            data["enrichment"] = {"errors": ["enrichment.json unreadable"]}
     return data
 
 
 @mcp.tool()
 def pov_reset(tenant: str = "default", confirm: bool = False) -> str:
-    """Delete one tenant's pov_report.json and snapshot history to start a new
-    PoV on that tenant. Requires confirm=true. Ask the operator before calling
-    with confirm. Deliverables and other tenants are untouched."""
+    """Delete one tenant's pov_report.json, snapshot history and enrichment to
+    start a new PoV on that tenant. Requires confirm=true. Ask the operator
+    before calling with confirm. Deliverables and other tenants are
+    untouched."""
     resolved = _resolve_tenant(tenant)
     if isinstance(resolved, dict):
         return resolved.get("error", "unknown error")
@@ -521,6 +533,10 @@ def pov_reset(tenant: str = "default", confirm: bool = False) -> str:
         backup = p.with_suffix(".json.bak")
         p.replace(backup)
         moved.append(str(backup))
+    enr = _tenant_dir(alias) / "enrichment.json"
+    if enr.exists():
+        enr.replace(enr.with_suffix(".json.bak"))
+        moved.append(str(enr.with_suffix(".json.bak")))
     hist = _tenant_dir(alias) / "history"
     archive = _tenant_dir(alias) / "history_archive"
     if any(hist.glob("*.json")):
@@ -548,6 +564,10 @@ def _summary(alias: str, report: PoVReport) -> dict:
         "alerts_total": report.alerts_total,
         "agent_sessions_total": report.agent_sessions_total,
     }
+
+
+# TI enrichment tool (deterministic NVD + MITRE facts)
+ti_tool.register(mcp, _resolve_tenant, _load_report, _tenant_dir)
 
 
 def main() -> None:
