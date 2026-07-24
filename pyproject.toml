@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "koi-pov-mcp"
-version = "0.1.0"
-description = "MCP server to collect Cortex AES (Koi) Proof of Value evidence over the Koi API"
+version = "0.2.0"
+description = "MCP server to collect Cortex AES (Koi) Proof of Value evidence over the Koi API, multi-tenant"
 readme = "README.md"
 license = {text = "MIT"}
 authors = [{name = "Julien Billochon"}]
@@ -17,7 +17,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# v0.2 rendering chain (PPTX/DOCX always, PDF needs system GTK on Windows)
+# future rendering chain (PPTX/DOCX always, PDF needs system GTK on Windows)
 render = ["python-pptx>=1.0.2", "python-docx>=1.1.0"]
 pdf = ["weasyprint>=62.0"]
 

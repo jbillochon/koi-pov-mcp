@@ -1,10 +1,10 @@
 ---
 name: koi-pov-deliverables
-description: This skill should be used when closing out a Koi (Cortex AES) Proof of Value and producing the customer-facing wrap-up. Triggers include "generate the PoV deliverables", "write the PoV report", "build the restitution deck", "collect the PoV data", "PoV wrap-up", "PoV closeout", "restitution de PoV". It collects tenant evidence through the koi-pov MCP server, reviews gaps, then produces an English report and slide deck organised around the success criteria agreed at kickoff. Also use when reviewing or revising an existing PoV report or deck.
-version: 2.0.0
+description: This skill should be used when closing out a Koi (Cortex AES) Proof of Value and producing the customer-facing wrap-up. Triggers include "generate the PoV deliverables", "write the PoV report", "build the restitution deck", "collect the PoV data", "PoV wrap-up", "PoV closeout", "restitution de PoV". It collects tenant evidence through the koi-pov MCP server (multi-tenant), reviews gaps, then produces an English report and slide deck organised around the success criteria agreed at kickoff. Also use when reviewing or revising an existing PoV report or deck.
+version: 2.1.0
 ---
 
-# Koi PoV deliverables (MCP-backed)
+# Koi PoV deliverables (MCP-backed, multi-tenant)
 
 Produce the two closing artefacts of a Koi Proof of Value: a **detailed report**
 and a **restitution deck**, both in English, both structured around the success
@@ -20,12 +20,12 @@ tour has failed even if every fact in it is true.
 
 ## Before anything else: this is a real customer document
 
-Four rules, in priority order. They override style, length and completeness.
+Five rules, in priority order. They override style, length and completeness.
 
-1. **Never invent.** Every figure comes from `pov_report_json` or from material
-   the operator provides. Anything missing stays a visible
-   `[[TO BE PROVIDED: ...]]`. If you are about to type a digit you did not read
-   in the collected data, stop and write a placeholder.
+1. **Never invent.** Every figure comes from `pov_report_json` for the selected
+   tenant or from material the operator provides. Anything missing stays a
+   visible `[[TO BE PROVIDED: ...]]`. If you are about to type a digit you did
+   not read in the collected data, stop and write a placeholder.
 2. **Evidence before assertion.** Every result ties to a field of the collected
    report or an operator-supplied artefact. A result with no evidence is an
    observation, and must be labelled as one.
@@ -34,15 +34,20 @@ Four rules, in priority order. They override style, length and completeness.
    "0 incidents" for a domain that failed to collect is a fabrication with a
    number attached. Check `pov_status` `missing_domains` and `warnings` before
    writing any zero.
-4. **Deliverables in English, conversation with the operator in their
+4. **One tenant per deliverable.** The operator may run several PoVs in
+   parallel. Confirm the tenant at the start, pass `tenant=` on every tool
+   call, and never blend figures from two tenants in one document. If a
+   comparison across customers is requested, refuse: PoV data is confidential
+   to each customer.
+5. **Deliverables in English, conversation with the operator in their
    language.** The report and deck are customer-facing and English. The
    exchange about them is not.
 
 ## Credentials
 
-**Never ask for, accept, or handle the Koi API key (or any credential) in the
+**Never ask for, accept, or handle a Koi API key (or any credential) in the
 conversation.** If `koi_ping` reports NOT CONFIGURED or AUTH FAILED, direct the
-operator to set `KOI_API_KEY` in the MCP server's env block
+operator to the `KOI_API_KEY[_<ALIAS>]` entries in the MCP server's env block
 (`claude_desktop_config.json`) and to restart Claude. Then stop until it works.
 
 ## Workflow
@@ -50,20 +55,22 @@ operator to set `KOI_API_KEY` in the MCP server's env block
 Run these in order. Do not skip step 3: it is what stops a confident-looking
 document being built on gaps.
 
-### 0. Connectivity
+### 0. Tenant and connectivity
 
-Call `koi_ping`. Only proceed on OK.
+Call `koi_tenants`. If more than one tenant is configured, ask the operator
+which one this session is about, and use that alias everywhere. Then
+`koi_ping(tenant=...)`; only proceed on OK.
 
 ### 1. Metadata
 
 Ask the operator for customer name, PoV window, author if not already set, then
-call `set_pov_meta`.
+call `set_pov_meta(tenant=..., ...)`.
 
 ### 2. Collect
 
-Call `koi_collect`. Prefer one or two domains per call on large tenants
-(collection is synchronous and the API rate limit is 30 req/min per route).
-Domains: devices, groups, inventory, inventory_views, policies, lists,
+Call `koi_collect(tenant=...)`. Prefer one or two domains per call on large
+tenants (collection is synchronous and the API rate limit is 30 req/min per
+route). Domains: devices, groups, inventory, inventory_views, policies, lists,
 remediations, approvals, alerts, agent_activity.
 
 Supplementary material from the operator (kickoff success criteria, meeting
@@ -71,8 +78,8 @@ notes, screenshots) is welcome at any point and is evidence like any other.
 
 ### 3. Report the gaps before writing anything
 
-From `pov_status` and `pov_report_json`, produce a short gap list **first**,
-and show it to the operator:
+From `pov_status(tenant=...)` and `pov_report_json(tenant=...)`, produce a
+short gap list **first**, and show it to the operator:
 
 - success criteria from kickoff with no matching collected evidence: the most
   damaging gap, because the scorecard is the deliverable;
@@ -99,9 +106,9 @@ related sections `[[TO BE PROVIDED: TI enrichment]]` /
 
 ### 5. Write the report, then the deck
 
-Work from `pov_report_json` as the single source of truth. Use the tenant
-`stage` field (`discovery` vs `governed`) to frame the narrative: a discovery
-tenant is a visibility story; a governed tenant is an outcomes story.
+Work from `pov_report_json(tenant=...)` as the single source of truth. Use the
+tenant `stage` field (`discovery` vs `governed`) to frame the narrative: a
+discovery tenant is a visibility story; a governed tenant is an outcomes story.
 
 Report structure: executive summary (written **last**), scope and coverage,
 success criteria scorecard, discovery findings, risk analysis, governance and
@@ -125,11 +132,11 @@ of what you did.
 
 | Command | Effect |
 |---|---|
-| `Check the tenant` | Steps 0-3 only: ping, collect, gap list. Generate nothing. |
-| `Generate the deliverables` | Full workflow. |
+| `Check the tenant` / `Check <alias>` | Steps 0-3 only: ping, collect, gap list. Generate nothing. |
+| `Generate the deliverables` | Full workflow on the confirmed tenant. |
 | `Generate the report only` / `the deck only` | Partial. |
-| `Status` | Call `pov_status` and summarise. |
-| `New PoV` | Confirm with the operator, then `pov_reset(confirm=true)`. |
+| `Status` / `Status <alias>` | Call `pov_status` and summarise. |
+| `New PoV on <alias>` | Confirm with the operator, then `pov_reset(tenant, confirm=true)`. |
 
 ## Regenerating over existing output
 
