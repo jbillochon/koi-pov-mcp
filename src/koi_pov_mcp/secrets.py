@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 from pathlib import Path
 
 from platformdirs import user_data_dir
@@ -31,8 +32,48 @@ KEY_PREFIX = "KOI_API_KEY_"
 ALIAS_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 
 
+def _migrate_legacy_dir(target: Path) -> None:
+    """Move data out of the pre-0.7.3 doubled directory.
+
+    Before 0.7.3 the work directory came from user_data_dir(APP_NAME), which
+    on Windows appends the app name twice (…\\koi-pov-mcp\\koi-pov-mcp)
+    because appauthor defaults to the app name. Keyring entries are keyed by
+    service name and are unaffected; only files move.
+    """
+    legacy = Path(user_data_dir(APP_NAME))
+    try:
+        if not legacy.exists() or legacy.resolve() == target.resolve():
+            return
+    except OSError:
+        return
+    if not (legacy / "tenants.json").exists():
+        return  # nothing meaningful to migrate
+    if (target / "tenants.json").exists():
+        return  # target already in use; leave both alone rather than merge
+
+    target.mkdir(parents=True, exist_ok=True)
+    for child in list(legacy.iterdir()):
+        destination = target / child.name
+        if destination.exists():
+            continue
+        try:
+            shutil.move(str(child), str(destination))
+        except (OSError, shutil.Error):
+            pass
+    try:
+        legacy.rmdir()
+    except OSError:
+        pass
+
+
 def store_dir() -> Path:
-    p = Path(os.environ.get("KOI_POV_WORKDIR") or user_data_dir(APP_NAME))
+    override = os.environ.get("KOI_POV_WORKDIR")
+    if override:
+        p = Path(override)
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+    p = Path(user_data_dir(APP_NAME, appauthor=False))
+    _migrate_legacy_dir(p)
     p.mkdir(parents=True, exist_ok=True)
     return p
 
