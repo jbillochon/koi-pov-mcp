@@ -2,6 +2,29 @@
 
 All notable changes to koi-pov-mcp.
 
+## 0.7.3 - 2026-07-24
+
+First run against a real tenant surfaced two integrity flaws and one
+cosmetic one.
+
+- **No more zeros for unmeasured data.** `_summary` used to report 0 for
+  every figure whose domain had not been collected yet (a partial sync
+  showed `policies_enabled: 0`, `alerts_total: 0`, ...). Those figures are
+  now `null`, with `not_measured` listing them and a note stating that null
+  is not zero. This is the project's core rule, and the data itself now
+  enforces it instead of relying on the skill to remember.
+- **The derived `stage` had the same flaw**: a tenant collected without its
+  governance domains looked like `discovery` when it was in fact `governed`.
+  `stage` is now `null` until policies, lists, remediations, alerts and
+  agent activity are all in, with `stage_note` saying what is missing.
+- `pov_report_json` now returns `missing_domains` alongside the data, and
+  `koi_whats_new` returns the domains covered by each side of the diff, so a
+  partial-vs-full comparison cannot be mistaken for customer news.
+- **Fixed the doubled work directory** (`...\koi-pov-mcp\koi-pov-mcp\` on
+  Windows): `platformdirs` was called without `appauthor=False`. Existing
+  data is migrated automatically on first start; credential-store entries
+  are unaffected.
+
 ## 0.7.2 - 2026-07-24
 
 - **Credential capture is non-blocking.** `koi_tenant_add` and
@@ -11,7 +34,6 @@ All notable changes to koi-pov-mcp.
   complete, and it froze the conversation while the operator typed.
 - The flow is now: tool returns the link -> the operator fills the page in
   their own time (5-minute expiry) -> `koi_ping` (or `koi_tenants`) confirms.
-  Tool descriptions state explicitly that nothing is saved on return.
 
 ## 0.7.1 - 2026-07-24
 

@@ -5,6 +5,10 @@ See module docstrings of secrets/dialog/ti_tool/render_tool/xsiam_tool for
 details. Credentials never transit through the chat; per-tenant environment
 under <workdir>/<alias>/: pov_report.json, history/, enrichment.json,
 xsiam_correlation.json, deliverables/.
+
+Measurement honesty: any figure whose source domain has not been collected
+is reported as null, never as 0. Same for the derived lifecycle stage, which
+is only meaningful once the governance domains are in.
 """
 
 from __future__ import annotations
@@ -35,6 +39,29 @@ DOMAINS = {
     "alerts": "collect_alerts",
     "agent_activity": "collect_agent_activity",
 }
+
+# Which collection domain each reported figure depends on. A figure whose
+# domain is missing is NOT zero, it is unmeasured, and must surface as null.
+SUMMARY_SOURCES = {
+    "devices_total": "devices",
+    "devices_active": "devices",
+    "items_total": "inventory",
+    "high_and_critical": "inventory",
+    "ungoverned_high_risk": "inventory",
+    "policies_enabled": "policies",
+    "remediations_total": "remediations",
+    "alerts_total": "alerts",
+    "agent_sessions_total": "agent_activity",
+}
+
+# `stage` compares governance and outcome signals; a partial collection would
+# make a governed tenant look like a discovery one.
+STAGE_DOMAINS = ("policies", "lists", "remediations", "alerts", "agent_activity")
+
+NULL_NOTE = (
+    "null means not measured (that domain has not been collected), never zero. "
+    "Do not report a null as 0 in any deliverable."
+)
 
 ADD_HINT = (
     "Add a tenant with the koi_tenant_add tool: it opens a credential page in "
@@ -124,7 +151,7 @@ def _snapshot(alias: str, report: PoVReport) -> str:
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     path = _tenant_dir(alias) / "history" / f"{ts}.json"
     data = asdict(report)
-    data["derived_stage"] = report.stage
+    data["derived_stage"] = report.stage if _stage_ready(report) else None
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(data, fh, indent=2, ensure_ascii=False)
     return ts
@@ -134,17 +161,66 @@ def _snapshots(alias: str) -> list[Path]:
     return sorted((_tenant_dir(alias) / "history").glob("*.json"))
 
 
+def _stage_ready(report: PoVReport) -> bool:
+    collected = set(report.collected_domains)
+    return all(d in collected for d in STAGE_DOMAINS)
+
+
+def _summary(alias: str, report: PoVReport) -> dict:
+    """Key figures, with null for anything not yet collected."""
+    collected = set(report.collected_domains)
+    values = {
+        "devices_total": report.devices_total,
+        "devices_active": report.devices_active,
+        "items_total": report.items_total,
+        "high_and_critical": report.high_and_critical,
+        "ungoverned_high_risk": report.ungoverned_high_risk,
+        "policies_enabled": report.policies_enabled,
+        "remediations_total": report.remediations_total,
+        "alerts_total": report.alerts_total,
+        "agent_sessions_total": report.agent_sessions_total,
+    }
+    out: dict = {"tenant": alias, "customer": report.meta.customer_name}
+    not_measured = []
+    for key, value in values.items():
+        if SUMMARY_SOURCES[key] in collected:
+            out[key] = value
+        else:
+            out[key] = None
+            not_measured.append(key)
+
+    if _stage_ready(report):
+        out["stage"] = report.stage
+    else:
+        out["stage"] = None
+        missing = [d for d in STAGE_DOMAINS if d not in collected]
+        out["stage_note"] = (
+            "not determinable yet: needs " + ", ".join(missing)
+        )
+    if not_measured:
+        out["not_measured"] = not_measured
+        out["note"] = NULL_NOTE
+    return out
+
+
 def _report_json(alias: str) -> dict:
     """Aggregated report + derived + enrichment + xsiam. Shared by the
     pov_report_json tool and render_deliverables."""
     report = _load_report(alias)
+    collected = set(report.collected_domains)
     data = asdict(report)
     data["tenant"] = alias
     data["derived"] = {
-        "stage": report.stage,
-        "high_and_critical": report.high_and_critical,
-        "pending_analysis": report.pending_analysis,
+        "stage": report.stage if _stage_ready(report) else None,
+        "high_and_critical": (
+            report.high_and_critical if "inventory" in collected else None
+        ),
+        "pending_analysis": (
+            report.pending_analysis if "inventory" in collected else None
+        ),
+        "note": NULL_NOTE,
     }
+    data["missing_domains"] = [d for d in DOMAINS if d not in collected]
     for name, key in (("enrichment.json", "enrichment"),
                       ("xsiam_correlation.json", "xsiam")):
         p = _tenant_dir(alias) / name
@@ -306,7 +382,10 @@ def koi_collect(
     agent_activity]; omit for all. Synchronous; rate limit 30 req/min/route,
     so prefer one or two domains at a time on large tenants (a full sync can
     exceed the host's tool timeout). Domain failures land in `warnings`
-    without stopping the others."""
+    without stopping the others.
+
+    In the returned summary, null means not measured (domain not collected
+    yet), never zero."""
     resolved = _resolve_tenant(tenant)
     if isinstance(resolved, dict):
         return resolved
@@ -355,7 +434,12 @@ def koi_whats_new(tenant: str = "default", since: str = "") -> dict:
     Baseline = previous snapshot, or last snapshot at/before `since`
     (ISO/YYYYMMDD). Deltas and new items only; unchanged figures are omitted
     and must not be presented as news. baseline null = first sync, no delta
-    story."""
+    story.
+
+    Caution: a delta between a partial sync and a full one is a collection
+    artefact, not customer news. Check the snapshots being compared cover the
+    same domains (pov_status shows what is collected) before narrating
+    growth."""
     resolved = _resolve_tenant(tenant)
     if isinstance(resolved, dict):
         return resolved
@@ -384,17 +468,23 @@ def koi_whats_new(tenant: str = "default", since: str = "") -> dict:
         current = json.load(fh)
     with open(baseline_path, encoding="utf-8") as fh:
         baseline = json.load(fh)
-    return {"tenant": alias, "baseline": baseline_path.stem,
-            "current": current_path.stem,
-            "changes": compute_whats_new(current, baseline),
-            "available_snapshots": [s.stem for s in snaps]}
+    return {
+        "tenant": alias,
+        "baseline": baseline_path.stem,
+        "current": current_path.stem,
+        "baseline_domains": baseline.get("collected_domains", []),
+        "current_domains": current.get("collected_domains", []),
+        "changes": compute_whats_new(current, baseline),
+        "available_snapshots": [s.stem for s in snaps],
+    }
 
 
 @mcp.tool()
 def pov_status(tenant: str = "default") -> dict:
     """State of play for one tenant ("etat des lieux"): collected vs missing
     domains, warnings, snapshots, enrichment and XSIAM presence, deliverables
-    path. Feeds the mandatory gap list."""
+    path. Feeds the mandatory gap list. In the summary, null means not
+    measured, never zero."""
     resolved = _resolve_tenant(tenant)
     if isinstance(resolved, dict):
         return resolved
@@ -421,7 +511,11 @@ def pov_report_json(tenant: str = "default") -> dict:
     """Full aggregated report for one tenant, including 'enrichment' (TI) and
     'xsiam' (correlation) when present. Single source of truth: every number
     in a deliverable comes from here or stays a [[TO BE PROVIDED]]
-    placeholder. Never mix tenants."""
+    placeholder. Never mix tenants.
+
+    Cross-check `missing_domains` before quoting any figure: a section whose
+    domain is missing has not been measured, and its raw counters are
+    meaningless rather than zero."""
     resolved = _resolve_tenant(tenant)
     if isinstance(resolved, dict):
         return resolved
@@ -457,23 +551,6 @@ def pov_reset(tenant: str = "default", confirm: bool = False) -> str:
     if moved:
         return f"Reset done for tenant '{alias}'. Previous data kept at: {', '.join(moved)}"
     return f"Nothing to reset: no data for tenant '{alias}'."
-
-
-def _summary(alias: str, report: PoVReport) -> dict:
-    return {
-        "tenant": alias,
-        "customer": report.meta.customer_name,
-        "stage": report.stage,
-        "devices_total": report.devices_total,
-        "devices_active": report.devices_active,
-        "items_total": report.items_total,
-        "high_and_critical": report.high_and_critical,
-        "ungoverned_high_risk": report.ungoverned_high_risk,
-        "policies_enabled": report.policies_enabled,
-        "remediations_total": report.remediations_total,
-        "alerts_total": report.alerts_total,
-        "agent_sessions_total": report.agent_sessions_total,
-    }
 
 
 # Optional-capability tools
