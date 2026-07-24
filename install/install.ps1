@@ -1,8 +1,9 @@
 # koi-pov-mcp installer for Windows (PowerShell 5.1+ and pwsh)
 # - creates an isolated venv in %USERPROFILE%\.koi-pov-mcp
 # - installs the package from this checkout
-# - registers the MCP server in Claude Desktop's config
+# - registers the MCP server in Claude Desktop's config (no keys in the config)
 # - installs the companion skill into %USERPROFILE%\.claude\skills
+# - offers to add tenant API keys via the CLI (stored in Windows Credential Manager)
 
 $ErrorActionPreference = "Stop"
 
@@ -32,20 +33,14 @@ Write-Host "Installing koi-pov-mcp"
 & (Join-Path $VenvDir "Scripts\pip.exe") install --quiet $RepoRoot
 if (-not (Test-Path $Bin)) { Write-Error "Install failed: $Bin not found." }
 
-# 3. API key (hidden input, optional)
-$Key = Read-Host -AsSecureString "Koi API key (Enter to skip and set later)"
-$KeyPlain = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
-    [Runtime.InteropServices.Marshal]::SecureStringToBSTR($Key))
-
-# 4. Merge Claude Desktop config.
-# JSON handling is delegated to the venv's Python: Windows PowerShell 5.1
-# lacks ConvertFrom-Json -AsHashtable, and a failed merge here must be loud,
-# not silent. The key is passed via the process environment, not argv.
+# 3. Register the MCP server in Claude Desktop's config.
+# No keys are written here: keys go to the OS credential store via the CLI.
+# JSON handling is delegated to the venv's Python (PowerShell 5.1 compatible),
+# and a failed merge is loud, not silent.
 New-Item -ItemType Directory -Force -Path (Split-Path $Cfg) | Out-Null
 $MergeScript = @'
 import json, os, sys
 cfg, bin_ = sys.argv[1], sys.argv[2]
-key = os.environ.get("KOI_KEY", "")
 data = {}
 if os.path.exists(cfg):
     with open(cfg, encoding="utf-8") as fh:
@@ -55,12 +50,9 @@ if os.path.exists(cfg):
             sys.exit(f"ERROR: existing config is not valid JSON ({cfg}): {exc}")
 servers = data.setdefault("mcpServers", {})
 entry = {"command": bin_}
-if key:
-    entry["env"] = {"KOI_API_KEY": key}
-elif isinstance(servers.get("koi-pov"), dict) and "env" in servers["koi-pov"]:
-    entry["env"] = servers["koi-pov"]["env"]  # keep a previously configured key
-else:
-    entry["env"] = {"KOI_API_KEY": ""}  # visible placeholder to fill in
+prev = servers.get("koi-pov")
+if isinstance(prev, dict) and prev.get("env"):
+    entry["env"] = prev["env"]  # keep env-configured keys from older setups
 servers["koi-pov"] = entry
 with open(cfg, "w", encoding="utf-8") as fh:
     json.dump(data, fh, indent=2)
@@ -68,25 +60,31 @@ print(f"MCP server registered in {cfg}")
 '@
 $MergeFile = Join-Path $env:TEMP "koi_pov_merge_cfg.py"
 Set-Content -Path $MergeFile -Value $MergeScript -Encoding UTF8
-$env:KOI_KEY = $KeyPlain
 try {
     & $VenvPython $MergeFile $Cfg $Bin
     if ($LASTEXITCODE -ne 0) { Write-Error "Config merge failed (see message above)." }
 }
 finally {
-    Remove-Item Env:\KOI_KEY -ErrorAction SilentlyContinue
     Remove-Item $MergeFile -ErrorAction SilentlyContinue
 }
 
-# 5. Skill
+# 4. Skill
 New-Item -ItemType Directory -Force -Path (Split-Path $SkillDst) | Out-Null
 if (Test-Path $SkillDst) { Remove-Item -Recurse -Force $SkillDst }
 Copy-Item -Recurse $SkillSrc $SkillDst
 Write-Host "Skill installed in $SkillDst"
 
+# 5. Tenants (keys stored in Windows Credential Manager, hidden input)
+Write-Host ""
+Write-Host "Tenant setup. One alias per Koi tenant (e.g. acme)." -ForegroundColor Cyan
+while ($true) {
+    $alias = Read-Host "Add a tenant alias (Enter to finish)"
+    if ([string]::IsNullOrWhiteSpace($alias)) { break }
+    & $Bin tenants add $alias.Trim().ToLower() --test
+}
+
 Write-Host ""
 Write-Host "Done. Restart Claude Desktop completely (quit from the tray)," -ForegroundColor Green
-Write-Host "then ask Claude: 'Use the koi_ping tool' to verify." -ForegroundColor Green
-if (-not $KeyPlain) {
-    Write-Host "No API key set: fill in KOI_API_KEY in the 'koi-pov' env block of $Cfg" -ForegroundColor Yellow
-}
+Write-Host "then ask Claude: 'Use the koi_tenants tool' to verify." -ForegroundColor Green
+Write-Host "Add more tenants anytime (no restart needed):" -ForegroundColor Green
+Write-Host "  $Bin tenants add <alias>" -ForegroundColor Green

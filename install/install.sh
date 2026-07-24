@@ -2,8 +2,9 @@
 # koi-pov-mcp installer for Linux and macOS
 # - creates an isolated venv in ~/.koi-pov-mcp
 # - installs the package from this checkout
-# - registers the MCP server in Claude Desktop's config
+# - registers the MCP server in Claude Desktop's config (no keys in the config)
 # - installs the companion skill into ~/.claude/skills
+# - offers to add tenant API keys via the CLI (OS keyring, or restricted file)
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -35,17 +36,11 @@ echo "Installing koi-pov-mcp"
 "$VENV/bin/pip" install --quiet "$REPO_ROOT"
 [ -x "$BIN" ] || { echo "ERROR: install failed, $BIN not found." >&2; exit 1; }
 
-# 3. API key (hidden input, optional)
-printf "Koi API key (Enter to skip and set later): "
-read -r -s KOI_KEY || KOI_KEY=""
-echo
-
-# 4. Merge Claude Desktop config (via Python for safe JSON handling)
+# 3. Register the MCP server (no keys written; keys live in the OS keyring)
 mkdir -p "$(dirname "$CFG")"
-KOI_KEY="$KOI_KEY" "$VENV/bin/python" - "$CFG" "$BIN" <<'EOF'
+"$VENV/bin/python" - "$CFG" "$BIN" <<'EOF'
 import json, os, sys
 cfg, bin_ = sys.argv[1], sys.argv[2]
-key = os.environ.get("KOI_KEY", "")
 data = {}
 if os.path.exists(cfg):
     with open(cfg, encoding="utf-8") as fh:
@@ -55,25 +50,33 @@ if os.path.exists(cfg):
             sys.exit(f"ERROR: existing config is not valid JSON ({cfg}): {exc}")
 servers = data.setdefault("mcpServers", {})
 entry = {"command": bin_}
-if key:
-    entry["env"] = {"KOI_API_KEY": key}
-elif isinstance(servers.get("koi-pov"), dict) and "env" in servers["koi-pov"]:
-    entry["env"] = servers["koi-pov"]["env"]  # keep a previously configured key
+prev = servers.get("koi-pov")
+if isinstance(prev, dict) and prev.get("env"):
+    entry["env"] = prev["env"]  # keep env-configured keys from older setups
 servers["koi-pov"] = entry
 with open(cfg, "w", encoding="utf-8") as fh:
     json.dump(data, fh, indent=2)
 print(f"MCP server registered in {cfg}")
 EOF
 
-# 5. Skill
+# 4. Skill
 mkdir -p "$(dirname "$SKILL_DST")"
 rm -rf "$SKILL_DST"
 cp -R "$SKILL_SRC" "$SKILL_DST"
 echo "Skill installed in $SKILL_DST"
 
+# 5. Tenants (hidden input, stored via keyring or restricted file)
+echo
+echo "Tenant setup. One alias per Koi tenant (e.g. acme)."
+while true; do
+  printf "Add a tenant alias (Enter to finish): "
+  read -r alias || alias=""
+  [ -n "$alias" ] || break
+  "$BIN" tenants add "$(printf '%s' "$alias" | tr '[:upper:]' '[:lower:]')" --test || true
+done
+
 echo
 echo "Done. Restart Claude Desktop completely, then ask Claude:"
-echo "  'Use the koi_ping tool'  to verify."
-if [ -z "$KOI_KEY" ]; then
-  echo "No API key set: add KOI_API_KEY to the 'koi-pov' env block in $CFG"
-fi
+echo "  'Use the koi_tenants tool'  to verify."
+echo "Add more tenants anytime (no restart needed):"
+echo "  $BIN tenants add <alias>"
