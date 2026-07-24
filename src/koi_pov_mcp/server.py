@@ -8,9 +8,10 @@ precedence:
   1. Environment variables in the MCP server env block:
      KOI_API_KEY (-> alias "default"), KOI_API_KEY_<ALIAS>,
      optional KOI_BASE_URL[_<ALIAS>] overrides.
-  2. The local credential store, managed from a terminal with
-     `koi-pov-mcp tenants add <alias>` (OS keyring, or a permission-restricted
-     file as fallback). Store changes apply immediately, no restart.
+  2. The local credential store (OS keyring, or a permission-restricted file
+     as fallback), fed either by the `koi_tenant_add` tool (native dialog on
+     the operator's machine) or by `koi-pov-mcp tenants add <alias>` in a
+     terminal. Store changes apply immediately, no restart.
 
 State: one pov_report.json per tenant, under <workdir>/<alias>/
 (KOI_POV_WORKDIR, or the OS user-data dir by default). Collection domains
@@ -21,6 +22,8 @@ never share state; a deliverable is always built from exactly one tenant.
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 from dataclasses import asdict
 from pathlib import Path
 
@@ -47,10 +50,10 @@ DOMAINS = {
 }
 
 ADD_HINT = (
-    "Add tenants from a terminal with: koi-pov-mcp tenants add <alias> "
-    "(the key is prompted with hidden input and stored in the OS credential "
-    "store; it applies immediately, no restart). Never paste keys in the "
-    "conversation."
+    "Add a tenant with the koi_tenant_add tool (opens a native dialog on the "
+    "operator's machine; the key never transits through the conversation), "
+    "or from a terminal with: koi-pov-mcp tenants add <alias>. Both apply "
+    "immediately, no restart. Never paste keys in the conversation."
 )
 
 
@@ -75,6 +78,23 @@ def _client_for(creds: dict[str, str]) -> KoiClient:
         api_key=creds["key"],
         base_url=creds["base_url"] or None,
     )
+
+
+def _ping_alias(alias: str) -> str:
+    """Ping one already-resolved alias. Shared by koi_ping and koi_tenant_add."""
+    registry = secrets.all_tenants()
+    if alias not in registry:
+        return f"Unknown tenant '{alias}'."
+    try:
+        _client_for(registry[alias]).ping()
+    except KoiAuthError:
+        return (
+            f"AUTH FAILED for tenant '{alias}': the API key was rejected (401). "
+            f"Re-add it (koi_tenant_add or the CLI) to overwrite."
+        )
+    except KoiAPIError as exc:
+        return f"API ERROR for tenant '{alias}': {exc}"
+    return f"OK: authenticated against the Koi API for tenant '{alias}'."
 
 
 # ---------------------------------------------------------------------- #
@@ -117,13 +137,62 @@ def _save_report(alias: str, report: PoVReport) -> str:
 
 
 @mcp.tool()
+def koi_tenant_add(alias: str, base_url: str = "") -> str:
+    """Add or update a Koi tenant from the Claude interface.
+
+    Opens a native dialog window on the operator's machine where they paste
+    the API key (masked input). The key goes straight from that window to the
+    OS credential store; it never transits through the conversation, and this
+    tool never returns it. Connectivity is tested automatically on success.
+
+    Use this when the operator says e.g. "add the acme tenant". Tell them to
+    look for the dialog window (it may open behind other windows). The dialog
+    auto-cancels after 3 minutes without input.
+    """
+    alias = (alias or "").strip().lower()
+    if not secrets.ALIAS_RE.match(alias):
+        return (
+            f"Invalid alias '{alias}': lowercase letters, digits, '-', '_', "
+            "max 40 chars, must start alphanumeric."
+        )
+
+    # Prefer pythonw.exe on Windows to avoid a console flash behind the dialog
+    python = sys.executable
+    if os.name == "nt":
+        pythonw = Path(python).with_name("pythonw.exe")
+        if pythonw.exists():
+            python = str(pythonw)
+
+    try:
+        proc = subprocess.run(
+            [python, "-m", "koi_pov_mcp.gui", alias, base_url],
+            capture_output=True,
+            text=True,
+            timeout=200,
+        )
+    except subprocess.TimeoutExpired:
+        return "Dialog timed out with no input. Nothing was saved."
+
+    if proc.returncode == 0:
+        return f"Tenant '{alias}' saved in the OS credential store. " + _ping_alias(alias)
+    if proc.returncode == 2:
+        return "Cancelled by the operator. Nothing was saved."
+    if proc.returncode == 3:
+        return (
+            "No graphical dialog available on this system (tkinter missing). "
+            f"Fallback: run in a terminal: koi-pov-mcp tenants add {alias}"
+        )
+    detail = (proc.stderr or "").strip()
+    return f"Dialog failed (exit {proc.returncode}). {detail or 'Nothing was saved.'}"
+
+
+@mcp.tool()
 def koi_tenants() -> dict:
     """List the configured Koi tenants and whether each already has a
     collected report. Call this first when the operator manages several PoVs,
     and ask which tenant to work on if more than one is configured. Keys
-    themselves are never returned. To add a tenant, the operator runs
-    `koi-pov-mcp tenants add <alias>` in a terminal (never in the chat);
-    it applies immediately, no restart needed."""
+    themselves are never returned. To add a tenant from the Claude interface,
+    use the koi_tenant_add tool (native dialog, key never in chat)."""
     registry = secrets.all_tenants()
     tenants = []
     for alias in sorted(registry):
@@ -146,9 +215,9 @@ def koi_tenants() -> dict:
 def koi_ping(tenant: str = "default") -> str:
     """Check Koi API connectivity and key validity for one tenant.
 
-    Call this before any collection on that tenant. If it fails, direct the
-    operator to `koi-pov-mcp tenants add <alias>` in a terminal (re-adding
-    overwrites the key). Never ask for the key in chat.
+    Call this before any collection on that tenant. If it fails, offer to run
+    koi_tenant_add (re-adding overwrites the key). Never ask for the key in
+    chat.
     """
     resolved = _resolve_tenant(tenant)
     if isinstance(resolved, dict):
@@ -156,17 +225,8 @@ def koi_ping(tenant: str = "default") -> str:
             f" Configured: {resolved['configured_tenants']}"
             if "configured_tenants" in resolved else ""
         )
-    alias, creds = resolved
-    try:
-        _client_for(creds).ping()
-    except KoiAuthError:
-        return (
-            f"AUTH FAILED for tenant '{alias}': the API key was rejected (401). "
-            f"Re-add it from a terminal: koi-pov-mcp tenants add {alias}"
-        )
-    except KoiAPIError as exc:
-        return f"API ERROR for tenant '{alias}': {exc}"
-    return f"OK: authenticated against the Koi API for tenant '{alias}'."
+    alias, _ = resolved
+    return _ping_alias(alias)
 
 
 @mcp.tool()
