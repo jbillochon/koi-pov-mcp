@@ -1,6 +1,6 @@
 # Troubleshooting
 
-## Installation and startup
+## Installation and updates
 
 **Tools never appear in Claude**
 - JSON syntax error in the Claude config (trailing comma is the usual
@@ -13,6 +13,17 @@
 - The merge is loud by design: it refuses to touch an existing config that
   is not valid JSON. Fix the file and re-run. Works on Windows PowerShell
   5.1 and pwsh (JSON handling is delegated to the venv's Python).
+
+**`pip install --upgrade .` fails: file in use / access denied**
+- A running MCP server holds `venv\Scripts\koi-pov-mcp.exe` open. Quit
+  Claude Desktop (from the tray) and any Claude Code session, then re-run.
+- If an interrupted upgrade left a `~oi-pov-mcp` (or similar) directory in
+  `venv\Lib\site-packages`, delete it: it is a rename residue and causes pip
+  warnings on every later command.
+- To check what is holding it on Windows:
+  `Get-Process | Where-Object { $_.Path -like "*koi-pov-mcp*" }`
+- After upgrading, restart Claude Desktop and run `/mcp` in Claude Code to
+  reload the server.
 
 ## Tenants and credentials
 

@@ -7,14 +7,14 @@ end, entirely from the Claude interface:
   per Koi tenant; an SE can run 5-6 PoVs in parallel.
 - **Natural-language driven**: "add a tenant", "sync tenant acme", "what's
   new for my follow-up", "generate the report and deck" work in any language.
-- **Credential-safe by construction**: API keys are entered in native OS
-  dialog windows and stored in the OS credential store; they never transit
+- **Credential-safe by construction**: API keys are entered in a local
+  browser page and stored in the OS credential store; they never transit
   through a Claude conversation.
 - **Deterministic threat intel**: NVD, OSV.dev, CISA KEV, FIRST EPSS, and a
   human-curated MITRE ATT&CK mapping. No model-generated intel, everything
   dated and traceable.
 - **Optional XSIAM cross-referencing**: link a Cortex XSIAM tenant to a Koi
-  tenant (same dialog approach) and correlate agent coverage and incidents.
+  tenant (same approach) and correlate agent coverage and incidents.
 - **Rendered deliverables**: report.docx and deck.pptx everywhere (pure
   Python), report.pdf where WeasyPrint is available. Missing narrative shows
   as a visible `[[TO BE PROVIDED]]`, never as an invented figure.
@@ -75,15 +75,27 @@ conversational; see the [User Guide](docs/USER_GUIDE.md).
 
 ## Updating
 
+**Quit Claude Desktop and any Claude Code session first.** While they run,
+the MCP server holds the venv's `koi-pov-mcp` executable open and pip cannot
+replace it (on Windows the upgrade fails with a file-in-use error and can
+leave a `~oi-pov-mcp` residue directory).
+
 ```bash
 cd <your clone> && git pull
 ~/.koi-pov-mcp/venv/bin/pip install --upgrade .
 cp -R skill/koi-pov-deliverables ~/.claude/skills/
 ```
 
-(Windows: `%USERPROFILE%\.koi-pov-mcp\venv\Scripts\pip.exe install --upgrade .`
-and copy the skill folder.) Restart Claude Desktop after updating: tenant
-keys and collected data are untouched by updates.
+Windows:
+
+```powershell
+cd <your clone>; git pull
+& "$env:USERPROFILE\.koi-pov-mcp\venv\Scripts\pip.exe" install --upgrade .
+Copy-Item -Recurse -Force .\skill\koi-pov-deliverables "$env:USERPROFILE\.claude\skills\"
+```
+
+Then start Claude again. Tenant keys and collected data are untouched by
+updates; the skill and the server can be updated independently.
 
 ## License
 
