@@ -1,16 +1,13 @@
 """
 Command-line interface.
 
-`koi-pov-mcp` with no arguments (or `serve`) runs the MCP server, which is
-what Claude Desktop invokes. Everything else is tenant management:
+`koi-pov-mcp` with no arguments (or `serve`) runs the MCP server. Tenant
+management (keys prompted with hidden input, never in argv, never in chat):
 
-    koi-pov-mcp tenants add acme        # prompts for the key, input hidden
-    koi-pov-mcp tenants list
-    koi-pov-mcp tenants test acme       # ping the Koi API with that key
-    koi-pov-mcp tenants remove acme
-
-Keys never appear in argv (visible in the process list) and never transit
-through a Claude conversation.
+    koi-pov-mcp tenants add acme [--test]     koi-pov-mcp xsiam add acme [--advanced]
+    koi-pov-mcp tenants list                  koi-pov-mcp xsiam list
+    koi-pov-mcp tenants test acme             koi-pov-mcp xsiam test acme
+    koi-pov-mcp tenants remove acme           koi-pov-mcp xsiam remove acme
 """
 
 from __future__ import annotations
@@ -23,7 +20,7 @@ from . import secrets
 from .client import KoiAPIError, KoiAuthError, KoiClient
 
 
-def _cmd_add(args: argparse.Namespace) -> int:
+def _cmd_add(args) -> int:
     alias = args.alias.strip().lower()
     try:
         key = getpass.getpass(f"Koi API key for tenant '{alias}' (input hidden): ").strip()
@@ -31,31 +28,32 @@ def _cmd_add(args: argparse.Namespace) -> int:
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
-    location = (
-        "OS credential store" if where == "keyring"
-        else f"local file ({secrets.store_dir() / 'tenants.json'}, permissions restricted)"
-    )
+    location = ("OS credential store" if where == "keyring"
+                else f"local file ({secrets.store_dir() / 'tenants.json'}, restricted)")
     print(f"Tenant '{alias}' saved in the {location}.")
     print("Available immediately in Claude, no restart needed.")
     if args.test:
-        return _cmd_test(argparse.Namespace(alias=alias))
+        return _cmd_test(args)
     return 0
 
 
-def _cmd_list(_args: argparse.Namespace) -> int:
+def _cmd_list(_args) -> int:
     registry = secrets.all_tenants()
+    xsiam = secrets.xsiam_list()
     if not registry:
         print("No tenants configured. Add one with: koi-pov-mcp tenants add <alias>")
         return 0
     width = max(len(a) for a in registry)
-    print(f"{'ALIAS'.ljust(width)}  SOURCE   BASE URL")
+    print(f"{'ALIAS'.ljust(width)}  SOURCE   XSIAM  BASE URL")
     for alias in sorted(registry):
         info = registry[alias]
-        print(f"{alias.ljust(width)}  {info['source']:<7}  {info['base_url'] or '(default)'}")
+        linked = "yes" if alias in xsiam else "no"
+        print(f"{alias.ljust(width)}  {info['source']:<7}  {linked:<5}  "
+              f"{info['base_url'] or '(default)'}")
     return 0
 
 
-def _cmd_test(args: argparse.Namespace) -> int:
+def _cmd_test(args) -> int:
     alias = args.alias.strip().lower()
     registry = secrets.all_tenants()
     if alias not in registry:
@@ -75,43 +73,95 @@ def _cmd_test(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_remove(args: argparse.Namespace) -> int:
+def _cmd_remove(args) -> int:
     alias = args.alias.strip().lower()
     if secrets.remove_tenant(alias):
-        print(f"Tenant '{alias}' removed from the store.")
+        print(f"Tenant '{alias}' removed from the store (XSIAM link included).")
         return 0
-    print(f"Nothing removed: '{alias}' is not in the store "
-          "(env-configured tenants are managed in the Claude config).",
-          file=sys.stderr)
+    print(f"Nothing removed: '{alias}' is not in the store.", file=sys.stderr)
+    return 1
+
+
+def _cmd_xsiam_add(args) -> int:
+    alias = args.alias.strip().lower()
+    api_url = input("XSIAM API URL (https://api-...): ").strip()
+    key_id = input("XSIAM API Key ID: ").strip()
+    key = getpass.getpass("XSIAM API key (input hidden): ").strip()
+    try:
+        secrets.xsiam_add(alias, api_url, key_id, key, args.advanced)
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    print(f"XSIAM tenant linked to '{alias}'. Available immediately.")
+    if args.test:
+        return _cmd_xsiam_test(args)
+    return 0
+
+
+def _cmd_xsiam_list(_args) -> int:
+    linked = secrets.xsiam_list()
+    if not linked:
+        print("No XSIAM tenants linked.")
+        return 0
+    for alias in sorted(linked):
+        e = linked[alias]
+        kind = "advanced" if e["advanced"] else "standard"
+        print(f"{alias}: {e['api_url']} (key id {e['key_id']}, {kind} key)")
+    return 0
+
+
+def _cmd_xsiam_test(args) -> int:
+    from .xsiam import XsiamClient, XsiamError
+    alias = args.alias.strip().lower()
+    x = secrets.xsiam_get(alias)
+    if not x:
+        print(f"ERROR: no XSIAM tenant linked to '{alias}'.", file=sys.stderr)
+        return 1
+    try:
+        XsiamClient(x["api_url"], x["key_id"], x["key"], advanced=x["advanced"]).ping()
+    except XsiamError as exc:
+        print(f"XSIAM ERROR for '{alias}': {exc}", file=sys.stderr)
+        return 1
+    print(f"OK: XSIAM tenant linked to '{alias}' is reachable and authenticated.")
+    return 0
+
+
+def _cmd_xsiam_remove(args) -> int:
+    alias = args.alias.strip().lower()
+    if secrets.xsiam_remove(alias):
+        print(f"XSIAM link removed from '{alias}'.")
+        return 0
+    print(f"Nothing removed: no XSIAM link on '{alias}'.", file=sys.stderr)
     return 1
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="koi-pov-mcp",
-        description="Koi PoV MCP server and tenant key management",
+        description="Koi PoV MCP server, tenant and XSIAM credential management",
     )
     sub = parser.add_subparsers(dest="cmd")
     sub.add_parser("serve", help="run the MCP server on stdio (default)")
 
-    tenants = sub.add_parser("tenants", help="manage tenant API keys")
+    tenants = sub.add_parser("tenants", help="manage Koi tenant API keys")
     tsub = tenants.add_subparsers(dest="tcmd", required=True)
+    p = tsub.add_parser("add"); p.add_argument("alias")
+    p.add_argument("--base-url", default=""); p.add_argument("--test", action="store_true")
+    p.set_defaults(func=_cmd_add)
+    tsub.add_parser("list").set_defaults(func=_cmd_list)
+    p = tsub.add_parser("test"); p.add_argument("alias"); p.set_defaults(func=_cmd_test)
+    p = tsub.add_parser("remove"); p.add_argument("alias"); p.set_defaults(func=_cmd_remove)
 
-    p_add = tsub.add_parser("add", help="add or update a tenant (prompts for the key)")
-    p_add.add_argument("alias", help="tenant alias, e.g. acme")
-    p_add.add_argument("--base-url", default="", help="override the Koi API base URL")
-    p_add.add_argument("--test", action="store_true", help="ping the API after saving")
-    p_add.set_defaults(func=_cmd_add)
-
-    tsub.add_parser("list", help="list configured tenants").set_defaults(func=_cmd_list)
-
-    p_test = tsub.add_parser("test", help="ping the Koi API for one tenant")
-    p_test.add_argument("alias")
-    p_test.set_defaults(func=_cmd_test)
-
-    p_rm = tsub.add_parser("remove", help="remove a tenant from the store")
-    p_rm.add_argument("alias")
-    p_rm.set_defaults(func=_cmd_remove)
+    xsiam = sub.add_parser("xsiam", help="manage linked XSIAM tenants")
+    xsub = xsiam.add_subparsers(dest="xcmd", required=True)
+    p = xsub.add_parser("add"); p.add_argument("alias")
+    p.add_argument("--advanced", action="store_true",
+                   help="the key is an Advanced API key (hashed auth)")
+    p.add_argument("--test", action="store_true")
+    p.set_defaults(func=_cmd_xsiam_add)
+    xsub.add_parser("list").set_defaults(func=_cmd_xsiam_list)
+    p = xsub.add_parser("test"); p.add_argument("alias"); p.set_defaults(func=_cmd_xsiam_test)
+    p = xsub.add_parser("remove"); p.add_argument("alias"); p.set_defaults(func=_cmd_xsiam_remove)
 
     args = parser.parse_args()
     if args.cmd in (None, "serve"):
