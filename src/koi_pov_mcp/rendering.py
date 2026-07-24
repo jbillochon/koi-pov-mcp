@@ -1,9 +1,10 @@
 """
 Deliverable rendering from a tenant's aggregated PoV JSON (+ enrichment).
 
-DOCX (python-docx) and PPTX (python-pptx) are pure Python and work on
-Windows, Linux and macOS. PDF uses WeasyPrint when importable (needs GTK on
-Windows) and is skipped honestly otherwise.
+All three formats are pure Python and work on Windows, Linux and macOS with
+no system libraries: DOCX (python-docx), PPTX (python-pptx), PDF (reportlab).
+WeasyPrint is used instead when it is importable AND reportlab is not, since
+it needs GTK on Windows and is therefore not a dependency we can rely on.
 
 Every number rendered here comes from the JSON. Narrative sections
 (executive summary, success criteria verdicts, recommendations) are passed
@@ -18,6 +19,7 @@ from pathlib import Path
 PLACEHOLDER_SUMMARY = "[[TO BE PROVIDED: executive summary]]"
 PLACEHOLDER_CRITERIA = "[[TO BE PROVIDED: success criteria scorecard]]"
 PLACEHOLDER_RECO = "[[TO BE PROVIDED: recommendations]]"
+NO_DATA = "[[TO BE PROVIDED: no data collected for this section]]"
 
 
 # ---------------------------------------------------------------------- #
@@ -26,7 +28,10 @@ PLACEHOLDER_RECO = "[[TO BE PROVIDED: recommendations]]"
 
 
 def _s(v) -> str:
-    return "" if v is None else str(v)
+    """Render a value for display. None means not measured, never 0."""
+    if v is None:
+        return "not measured"
+    return str(v)
 
 
 def _kv_rows(d: dict | None) -> list[list[str]]:
@@ -38,6 +43,7 @@ def build_content(data: dict, executive_summary: str, recommendations: str,
     meta = data.get("meta") or {}
     derived = data.get("derived") or {}
     enr = data.get("enrichment") or {}
+    missing = data.get("missing_domains") or []
 
     top_rows = [
         [_s(i.get("name")), _s(i.get("publisher")), _s(i.get("marketplace")),
@@ -78,8 +84,13 @@ def build_content(data: dict, executive_summary: str, recommendations: str,
          "YES" + (f" ({c.get('kev_date_added')})" if c.get("kev_date_added") else "")
          if c.get("kev") else "no",
          f"{c['epss']:.2%}" if isinstance(c.get("epss"), float) else "",
-         _s(c.get("cvss_score")), _s(c.get("cvss_severity"))]
+         _s(c.get("cvss_score")) if c.get("cvss_score") is not None else "",
+         _s(c.get("cvss_severity")) if c.get("cvss_severity") else ""]
         for c in ranked[:10]
+    ]
+    osv_rows = [
+        [pkg, ", ".join(ids[:4])]
+        for pkg, ids in list((enr.get("osv") or {}).get("matches", {}).items())[:10]
     ]
 
     criteria_rows = None
@@ -96,7 +107,8 @@ def build_content(data: dict, executive_summary: str, recommendations: str,
             f"Prepared by {meta.get('prepared_by')}" if meta.get("prepared_by") else "",
             f"Generated {meta.get('generated_at', '')}",
         ])),
-        "stage": derived.get("stage", ""),
+        "stage": derived.get("stage") or "not determinable (partial collection)",
+        "missing_domains": missing,
         "executive_summary": executive_summary.strip() or PLACEHOLDER_SUMMARY,
         "recommendations": recommendations.strip() or PLACEHOLDER_RECO,
         "criteria_rows": criteria_rows,
@@ -109,7 +121,7 @@ def build_content(data: dict, executive_summary: str, recommendations: str,
             ("Ungoverned high risk", _s(data.get("ungoverned_high_risk"))),
             ("Exposed installs", _s(data.get("exposed_installs"))),
             ("Remediations", _s(data.get("remediations_total"))),
-            ("Agent sessions (30d)", _s(data.get("agent_sessions_total"))),
+            ("Agent sessions", _s(data.get("agent_sessions_total"))),
         ],
         "devices_by_os": _kv_rows(data.get("devices_by_os")),
         "items_by_view": _kv_rows(data.get("items_by_view")),
@@ -134,9 +146,21 @@ def build_content(data: dict, executive_summary: str, recommendations: str,
         "blocked_rows": blocked_rows,
         "alerts_by_severity": _kv_rows(data.get("alerts_by_severity")),
         "ti_rows": ti_rows,
+        "osv_rows": osv_rows,
         "ti_fetched_at": enr.get("fetched_at", ""),
         "mitre": enr.get("mitre") or {},
     }
+
+
+def _mitre_rows(content: dict) -> list[list[str]]:
+    rows = []
+    for finding, payload in (content.get("mitre") or {}).items():
+        techniques = ", ".join(
+            f"{t['id']} {t.get('name', '')}".strip()
+            for t in payload.get("techniques", [])
+        )
+        rows.append([finding, techniques])
+    return rows[:12]
 
 
 # ---------------------------------------------------------------------- #
@@ -151,7 +175,7 @@ def render_docx(content: dict, path: Path) -> None:
 
     def table(headers: list[str], rows: list[list[str]]) -> None:
         if not rows:
-            doc.add_paragraph("[[TO BE PROVIDED: no data collected for this section]]")
+            doc.add_paragraph(NO_DATA)
             return
         t = doc.add_table(rows=1, cols=len(headers))
         t.style = "Light Grid Accent 1"
@@ -165,6 +189,12 @@ def render_docx(content: dict, path: Path) -> None:
     doc.add_heading(content["title"], level=0)
     doc.add_paragraph(content["subtitle"])
     doc.add_paragraph(f"Tenant lifecycle stage: {content['stage']}")
+    if content["missing_domains"]:
+        doc.add_paragraph(
+            "Not collected during this PoV: "
+            + ", ".join(content["missing_domains"])
+            + ". Figures for these areas are absent, not zero."
+        )
 
     doc.add_heading("Executive summary", level=1)
     doc.add_paragraph(content["executive_summary"])
@@ -176,7 +206,7 @@ def render_docx(content: dict, path: Path) -> None:
         doc.add_paragraph(PLACEHOLDER_CRITERIA)
 
     doc.add_heading("Scope and coverage", level=1)
-    table(["Metric", "Value"], [list(k) for k in content["kpis"][:4]])
+    table(["Metric", "Value"], [list(k) for k in content["kpis"]])
     doc.add_heading("Devices by OS", level=2)
     table(["OS", "Devices"], content["devices_by_os"])
 
@@ -195,13 +225,18 @@ def render_docx(content: dict, path: Path) -> None:
           content["top_rows"])
 
     doc.add_heading("Threat intelligence", level=1)
-    if content["ti_rows"]:
+    if content["ti_rows"] or content["osv_rows"] or content["mitre"]:
         doc.add_paragraph(
             f"Threat intel as of {content['ti_fetched_at']}. "
             "Priority reads exploitation first: KEV (known exploited), then "
             "EPSS (probability), then CVSS (severity)."
         )
+        doc.add_heading("CVEs in scope", level=2)
         table(["CVE", "KEV", "EPSS", "CVSS", "Severity"], content["ti_rows"])
+        doc.add_heading("Vulnerable packages (OSV)", level=2)
+        table(["Package", "Advisories"], content["osv_rows"])
+        doc.add_heading("ATT&CK techniques from findings", level=2)
+        table(["Finding", "Techniques"], _mitre_rows(content))
     else:
         doc.add_paragraph("[[TO BE PROVIDED: TI enrichment (run koi_enrich)]]")
 
@@ -223,7 +258,7 @@ def render_docx(content: dict, path: Path) -> None:
     doc.add_heading("Agentic runtime activity", level=1)
     table(["Decision", "Count"], content["agent_decisions"])
     table(["Agent", "Sessions"], content["agents_seen"])
-    doc.add_heading("Blocked actions (last 24h sample)", level=2)
+    doc.add_heading("Blocked actions (sample)", level=2)
     table(["Agent", "Host", "Action", "Target", "Time"], content["blocked_rows"])
 
     doc.add_heading("Recommendations", level=1)
@@ -252,8 +287,8 @@ def render_pptx(content: dict, path: Path) -> None:
         p.font.bold = True
         return s
 
-    def bullets(s, lines: list[str], size: int = 16):
-        tb = s.shapes.add_textbox(Inches(0.6), Inches(1.3), Inches(8.8), Inches(5.6))
+    def bullets(s, lines: list[str], size: int = 16, top: float = 1.3):
+        tb = s.shapes.add_textbox(Inches(0.6), Inches(top), Inches(8.8), Inches(5.4))
         tf = tb.text_frame
         tf.word_wrap = True
         for i, line in enumerate(lines):
@@ -263,7 +298,7 @@ def render_pptx(content: dict, path: Path) -> None:
 
     def table(s, headers: list[str], rows: list[list[str]], top: float = 1.3):
         if not rows:
-            bullets(s, ["[[TO BE PROVIDED: no data collected for this section]]"])
+            bullets(s, [NO_DATA])
             return
         rows = rows[:9]
         shape = s.shapes.add_table(
@@ -276,66 +311,207 @@ def render_pptx(content: dict, path: Path) -> None:
             for j, v in enumerate(row):
                 shape.cell(i, j).text = _s(v)[:60]
 
-    # 1 title
     s = slide(content["title"])
     bullets(s, [content["subtitle"], f"Tenant lifecycle stage: {content['stage']}"], 18)
-    # 2 exec summary
+
     bullets(slide("Executive summary"), content["executive_summary"].split("\n"), 18)
-    # 3 scorecard
+
     s = slide("Success criteria scorecard")
     if content["criteria_rows"]:
         table(s, ["Criterion", "Verdict", "Evidence"], content["criteria_rows"])
     else:
         bullets(s, [PLACEHOLDER_CRITERIA])
-    # 4 coverage
+
     table(slide("Coverage"), ["Metric", "Value"], [list(k) for k in content["kpis"]])
-    # 5 discovery
     table(slide("Discovery: inventory by category"), ["Category", "Items"],
           content["items_by_view"])
-    # 6 risk
     table(slide("Risk distribution"), ["Risk level", "Items"], content["items_by_risk"])
-    # 7 top risks
+    table(slide("Most frequent findings"), ["Finding", "Occurrences"],
+          content["finding_rows"])
     table(slide("Top risk items"),
           ["Item", "Publisher", "Marketplace", "Risk", "Level", "Endpoints"],
           content["top_rows"])
-    # 8 TI
+
     s = slide("Threat intelligence")
     if content["ti_rows"]:
         bullets(s, [f"As of {content['ti_fetched_at']} - KEV > EPSS > CVSS"], 14)
         table(s, ["CVE", "KEV", "EPSS", "CVSS", "Severity"], content["ti_rows"], top=1.8)
     else:
         bullets(s, ["[[TO BE PROVIDED: TI enrichment]]"])
-    # 9 exposure
+
+    s = slide("ATT&CK techniques observed")
+    table(s, ["Finding", "Techniques"], _mitre_rows(content))
+
     table(slide("Exposure: ungoverned high risk"),
           ["Item", "Marketplace", "Level", "Endpoints", "Findings"],
           content["action_rows"])
-    # 10 governance
     table(slide("Governance"), ["Policy", "Action", "State", "Groups"],
           content["policy_rows"])
-    # 11 remediation
     table(slide("Remediation"), ["Status", "Count"], content["remed_by_status"])
-    # 12 agentic runtime
-    s = slide("Agentic runtime")
-    table(s, ["Decision", "Count"], content["agent_decisions"])
-    # 13 recommendations
+    table(slide("Agentic runtime"), ["Decision", "Count"], content["agent_decisions"])
+
     bullets(slide("Recommendations"), content["recommendations"].split("\n"), 18)
-    # 14 next steps
-    bullets(slide("Next steps"), ["[[TO BE PROVIDED: next steps agreed with the customer]]"])
+    bullets(slide("Next steps"),
+            ["[[TO BE PROVIDED: next steps agreed with the customer]]"])
 
     prs.save(str(path))
 
 
 # ---------------------------------------------------------------------- #
-# PDF (optional, WeasyPrint)
+# PDF: reportlab (pure Python, no system libraries)
 # ---------------------------------------------------------------------- #
 
 
-def render_pdf(content: dict, path: Path) -> None:
-    from weasyprint import HTML  # ImportError handled by caller
+def _render_pdf_reportlab(content: dict, path: Path) -> None:
+    from reportlab.lib import colors
+    from reportlab.lib.enums import TA_LEFT
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+    from reportlab.lib.units import mm
+    from reportlab.platypus import (
+        PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle,
+    )
+
+    styles = getSampleStyleSheet()
+    body = ParagraphStyle("body", parent=styles["BodyText"], fontSize=9,
+                          leading=12, alignment=TA_LEFT)
+    cell = ParagraphStyle("cell", parent=body, fontSize=7.5, leading=9.5)
+    head_cell = ParagraphStyle("head", parent=cell, textColor=colors.white,
+                               fontName="Helvetica-Bold")
+
+    doc = SimpleDocTemplate(
+        str(path), pagesize=A4,
+        leftMargin=16 * mm, rightMargin=16 * mm,
+        topMargin=16 * mm, bottomMargin=16 * mm,
+        title=content["title"],
+    )
+    width = doc.width
+    story: list = []
+
+    def h1(text: str) -> None:
+        story.append(Spacer(1, 7))
+        story.append(Paragraph(text, styles["Heading1"]))
+
+    def h2(text: str) -> None:
+        story.append(Spacer(1, 4))
+        story.append(Paragraph(text, styles["Heading2"]))
+
+    def para(text: str) -> None:
+        for chunk in str(text).split("\n"):
+            if chunk.strip():
+                story.append(Paragraph(chunk, body))
+                story.append(Spacer(1, 3))
+
+    def table(headers: list[str], rows: list[list[str]]) -> None:
+        if not rows:
+            para(NO_DATA)
+            return
+        data = [[Paragraph(h, head_cell) for h in headers]]
+        for row in rows:
+            data.append([Paragraph(_s(v), cell) for v in row])
+        col = width / len(headers)
+        t = Table(data, colWidths=[col] * len(headers), repeatRows=1)
+        t.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#31445c")),
+            ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#9aa5b1")),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1),
+             [colors.white, colors.HexColor("#f2f4f7")]),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 4),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ]))
+        story.append(t)
+        story.append(Spacer(1, 6))
+
+    story.append(Paragraph(content["title"], styles["Title"]))
+    para(content["subtitle"])
+    para(f"Tenant lifecycle stage: {content['stage']}")
+    if content["missing_domains"]:
+        para("Not collected during this PoV: "
+             + ", ".join(content["missing_domains"])
+             + ". Figures for these areas are absent, not zero.")
+
+    h1("Executive summary")
+    para(content["executive_summary"])
+
+    h1("Success criteria scorecard")
+    if content["criteria_rows"]:
+        table(["Criterion", "Verdict", "Evidence"], content["criteria_rows"])
+    else:
+        para(PLACEHOLDER_CRITERIA)
+
+    h1("Scope and coverage")
+    table(["Metric", "Value"], [list(k) for k in content["kpis"]])
+    h2("Devices by OS")
+    table(["OS", "Devices"], content["devices_by_os"])
+
+    story.append(PageBreak())
+    h1("Discovery")
+    h2("Inventory by category")
+    table(["Category", "Items"], content["items_by_view"])
+    h2("Inventory by marketplace")
+    table(["Marketplace", "Items"], content["items_by_marketplace"])
+
+    h1("Risk analysis")
+    table(["Risk level", "Items"], content["items_by_risk"])
+    h2("Most frequent findings")
+    table(["Finding", "Occurrences"], content["finding_rows"])
+    h2("Top risk items")
+    table(["Item", "Publisher", "Marketplace", "Risk", "Level", "Endpoints"],
+          content["top_rows"])
+
+    story.append(PageBreak())
+    h1("Threat intelligence")
+    if content["ti_rows"] or content["osv_rows"] or content["mitre"]:
+        para(f"Threat intel as of {content['ti_fetched_at']}. Priority reads "
+             "exploitation first: KEV (known exploited), then EPSS "
+             "(probability), then CVSS (severity).")
+        h2("CVEs in scope")
+        table(["CVE", "KEV", "EPSS", "CVSS", "Severity"], content["ti_rows"])
+        h2("Vulnerable packages (OSV)")
+        table(["Package", "Advisories"], content["osv_rows"])
+        h2("ATT&CK techniques from findings")
+        table(["Finding", "Techniques"], _mitre_rows(content))
+    else:
+        para("[[TO BE PROVIDED: TI enrichment (run koi_enrich)]]")
+
+    h1("Exposure and priority actions")
+    table(["Item", "Marketplace", "Level", "Endpoints", "Findings"],
+          content["action_rows"])
+
+    story.append(PageBreak())
+    h1("Governance")
+    table(["Policy", "Action", "State", "Groups"], content["policy_rows"])
+    h2("Runtime (agentic) policies")
+    table(["Policy", "Mode", "State", "Agents"], content["runtime_policies"])
+    table(["List", "Entries"], [list(k) for k in content["lists"]])
+
+    h1("Remediation")
+    table(["Status", "Count"], content["remed_by_status"])
+    h2("Remediated items (sample)")
+    table(["Item", "Host", "Platform", "Level", "Reason"], content["remed_rows"])
+
+    h1("Agentic runtime activity")
+    table(["Decision", "Count"], content["agent_decisions"])
+    table(["Agent", "Sessions"], content["agents_seen"])
+    h2("Blocked actions (sample)")
+    table(["Agent", "Host", "Action", "Target", "Time"], content["blocked_rows"])
+
+    h1("Recommendations")
+    para(content["recommendations"])
+
+    doc.build(story)
+
+
+def _render_pdf_weasyprint(content: dict, path: Path) -> None:
+    """Fallback engine. Needs GTK on Windows, hence not the default."""
+    from weasyprint import HTML
 
     def html_table(headers, rows):
         if not rows:
-            return "<p><em>[[TO BE PROVIDED: no data collected]]</em></p>"
+            return f"<p><em>{NO_DATA}</em></p>"
         head = "".join(f"<th>{h}</th>" for h in headers)
         body = "".join(
             "<tr>" + "".join(f"<td>{_s(v)}</td>" for v in row) + "</tr>"
@@ -352,9 +528,8 @@ def render_pdf(content: dict, path: Path) -> None:
         ("Top risk items",
          html_table(["Item", "Publisher", "Marketplace", "Risk", "Level", "Endpoints"],
                     content["top_rows"])),
-        ("Threat intelligence" + (f" (as of {content['ti_fetched_at']})"
-                                  if content["ti_fetched_at"] else ""),
-         html_table(["CVE", "KEV", "EPSS", "CVSS", "Severity"], content["ti_rows"])),
+        ("Threat intelligence", html_table(["CVE", "KEV", "EPSS", "CVSS", "Severity"],
+                                           content["ti_rows"])),
         ("Exposure", html_table(["Item", "Marketplace", "Level", "Endpoints", "Findings"],
                                 content["action_rows"])),
         ("Governance", html_table(["Policy", "Action", "State", "Groups"],
@@ -364,7 +539,7 @@ def render_pdf(content: dict, path: Path) -> None:
         ("Recommendations", f"<p>{content['recommendations']}</p>"),
     ]
     body = "".join(f"<h2>{t}</h2>{h}" for t, h in sections)
-    html = f"""<html><head><style>
+    html = f"""<html><head><meta charset="utf-8"><style>
     body {{ font-family: Helvetica, Arial, sans-serif; font-size: 11px; }}
     h1 {{ font-size: 20px; }} h2 {{ font-size: 14px; margin-top: 18px; }}
     table {{ border-collapse: collapse; width: 100%; }}
@@ -374,6 +549,16 @@ def render_pdf(content: dict, path: Path) -> None:
     <h1>{content['title']}</h1><p>{content['subtitle']}</p>{body}
     </body></html>"""
     HTML(string=html).write_pdf(str(path))
+
+
+def render_pdf(content: dict, path: Path) -> None:
+    """reportlab first (no system libraries); WeasyPrint only as a fallback."""
+    try:
+        _render_pdf_reportlab(content, path)
+        return
+    except ImportError:
+        pass
+    _render_pdf_weasyprint(content, path)
 
 
 def render(data: dict, out_dir: Path, formats: list[str],
@@ -403,10 +588,7 @@ def render(data: dict, out_dir: Path, formats: list[str],
             else:
                 skipped[fmt] = "unknown format (docx, pptx, pdf)"
         except ImportError as exc:
-            skipped[fmt] = (
-                f"missing dependency: {exc}. "
-                "PDF needs WeasyPrint (pip install 'koi-pov-mcp[pdf]'; GTK required on Windows)."
-            )
+            skipped[fmt] = f"missing dependency: {exc}"
         except Exception as exc:  # noqa: BLE001 - one format must not sink the others
             skipped[fmt] = f"{type(exc).__name__}: {exc}"
 

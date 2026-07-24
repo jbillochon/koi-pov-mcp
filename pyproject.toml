@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "koi-pov-mcp"
-version = "0.7.3"
+version = "0.8.0"
 description = "MCP server for Cortex AES (Koi) PoV operations: multi-tenant collection, TI enrichment (OSV/KEV/EPSS/NVD/MITRE), XSIAM cross-referencing, follow-up diffs, DOCX/PPTX/PDF deliverables"
 readme = "README.md"
 license = {text = "MIT"}
@@ -17,11 +17,12 @@ dependencies = [
     "keyring>=24.0.0",
     "python-pptx>=1.0.2",
     "python-docx>=1.1.0",
+    "reportlab>=4.0.0",
 ]
 
 [project.optional-dependencies]
-# PDF needs system GTK on Windows, hence optional
-pdf = ["weasyprint>=62.0"]
+# Alternative PDF engine; nicer CSS layout but needs system GTK on Windows.
+weasyprint = ["weasyprint>=62.0"]
 
 [project.scripts]
 koi-pov-mcp = "koi_pov_mcp.cli:main"
