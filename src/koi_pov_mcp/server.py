@@ -191,19 +191,21 @@ def _collect_one(alias, creds, wanted, max_pages, activity_days) -> dict:
 
 @mcp.tool()
 def koi_tenant_add(alias: str, base_url: str = "") -> str:
-    """Add or update a Koi tenant from the Claude interface, and create its
-    dedicated environment (data, history, deliverables).
+    """Open a credential page so the operator can add or update a Koi tenant.
 
-    Opens a credential page in the operator's default browser on their own
-    machine. They paste the Koi API key there; it goes straight to the OS
-    credential store. The key never transits through the conversation and
-    this tool never returns it. Connectivity is tested automatically.
+    The page runs locally in their browser; the API key goes straight to the
+    OS credential store. It never transits through the conversation and this
+    tool never returns it.
 
-    Use when the operator says e.g. "add a tenant" in any language; ask for a
-    short alias if they did not give one. Tell them a browser tab is opening.
-    If the result mentions a URL, relay it verbatim: their browser may not
-    have opened automatically, and that link is how they finish. The page
-    expires after 5 minutes.
+    This returns IMMEDIATELY with the page URL: it does NOT wait for the
+    operator to fill the form, and nothing is saved yet when it returns.
+    Relay the URL verbatim (their browser may not have opened by itself),
+    say the page expires in 5 minutes, and stop there. When the operator
+    confirms they saved the key, call koi_ping(alias) to verify. Never
+    announce the tenant as added before that ping succeeds.
+
+    Use when the operator says e.g. "add a tenant" in any language; ask for
+    a short alias first if they did not give one.
     """
     alias = (alias or "").strip().lower()
     if not secrets.ALIAS_RE.match(alias):
@@ -211,10 +213,16 @@ def koi_tenant_add(alias: str, base_url: str = "") -> str:
                 "max 40 chars, must start alphanumeric.")
 
     result = dialog.launch("koi", alias, base_url)
-    if result["code"] != 0:
-        return dialog.describe(result, alias, "API key", _cli_hint(alias))
-    _tenant_dir(alias)
-    return f"Tenant '{alias}' saved in the OS credential store. " + _ping_alias(alias)
+    if result["error"]:
+        return (f"Could not open the credential page: {result['error']}. "
+                f"Terminal fallback: {_cli_hint(alias)}")
+    _tenant_dir(alias)  # provision the environment now; the key follows
+    return (
+        f"Credential page opened for tenant '{alias}'. If no browser tab "
+        f"appeared, open this link: {result['url']} (expires in 5 minutes). "
+        "Nothing is saved until the form is submitted; tell me once it is "
+        "done and I will verify the connection."
+    )
 
 
 @mcp.tool()
@@ -245,9 +253,10 @@ def koi_tenants() -> dict:
 
 @mcp.tool()
 def koi_ping(tenant: str = "default") -> str:
-    """Check Koi API connectivity and key validity for one tenant. If it
-    fails, offer koi_tenant_add (re-adding overwrites the key). Never ask for
-    the key in chat."""
+    """Check Koi API connectivity and key validity for one tenant. Also the
+    way to confirm a koi_tenant_add actually completed. If it fails, offer
+    koi_tenant_add again (re-adding overwrites the key). Never ask for the
+    key in chat."""
     resolved = _resolve_tenant(tenant)
     if isinstance(resolved, dict):
         return resolved.get("error", "unknown error") + (
@@ -295,8 +304,9 @@ def koi_collect(
     any language. domains subset of [devices, groups, inventory,
     inventory_views, policies, lists, remediations, approvals, alerts,
     agent_activity]; omit for all. Synchronous; rate limit 30 req/min/route,
-    prefer one or two domains at a time on large tenants. Domain failures
-    land in `warnings` without stopping the others."""
+    so prefer one or two domains at a time on large tenants (a full sync can
+    exceed the host's tool timeout). Domain failures land in `warnings`
+    without stopping the others."""
     resolved = _resolve_tenant(tenant)
     if isinstance(resolved, dict):
         return resolved
@@ -315,8 +325,9 @@ def koi_sync_all(
     activity_days: int = 30,
 ) -> dict:
     """Sync every configured tenant sequentially ("sync all my Koi tenants").
-    Independent per tenant; one failure does not stop the rest. Warn the
-    operator about the duration before a full sync of many tenants."""
+    Independent per tenant; one failure does not stop the rest. With several
+    tenants this can exceed the host's tool timeout: warn the operator, and
+    prefer scoped domains or per-tenant koi_collect calls when in doubt."""
     registry = secrets.all_tenants()
     if not registry:
         return {"error": f"NOT CONFIGURED: no Koi tenant found. {ADD_HINT}"}

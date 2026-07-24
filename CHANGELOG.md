@@ -2,18 +2,27 @@
 
 All notable changes to koi-pov-mcp.
 
+## 0.7.2 - 2026-07-24
+
+- **Credential capture is non-blocking.** `koi_tenant_add` and
+  `xsiam_tenant_add` now start the local page and return its URL at once,
+  instead of waiting for the form to be submitted. Reason: MCP hosts abandon
+  a tool call after a few minutes, so a blocking capture could never
+  complete, and it froze the conversation while the operator typed.
+- The flow is now: tool returns the link -> the operator fills the page in
+  their own time (5-minute expiry) -> `koi_ping` (or `koi_tenants`) confirms.
+  Tool descriptions state explicitly that nothing is saved on return.
+
 ## 0.7.1 - 2026-07-24
 
-- **Fixed credential capture**: `koi_tenant_add` and `xsiam_tenant_add` now
-  serve a form on `127.0.0.1` (random port, one-time token, 5-minute expiry)
-  and open it in the operator's browser, instead of a native Tk window.
-  Reason: when Claude Desktop spawns the MCP server on Windows, a Tk window
-  is created but not reliably surfaced to the desktop, so the operator saw
-  nothing until the 3-minute timeout.
-- The capture URL is now relayed in the tool result when the flow does not
-  complete, so a browser that fails to open is no longer a dead end.
-- Tk remains available for environments that prefer it:
-  `python -m koi_pov_mcp.gui koi <alias> --tk`.
+- **Fixed credential capture**: a form served on `127.0.0.1` (random port,
+  one-time token) opened in the operator's browser, instead of a native Tk
+  window. Reason: when Claude Desktop spawns the MCP server on Windows, a Tk
+  window is created but not reliably surfaced to the desktop, so the operator
+  saw nothing until the timeout.
+- The capture URL is relayed in the tool result, so a browser that fails to
+  open is no longer a dead end.
+- Tk remains available: `python -m koi_pov_mcp.gui koi <alias> --tk`.
 
 ## 0.7.0 - 2026-07-24
 
