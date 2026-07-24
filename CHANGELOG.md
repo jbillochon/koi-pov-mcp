@@ -2,6 +2,19 @@
 
 All notable changes to koi-pov-mcp.
 
+## 0.7.1 - 2026-07-24
+
+- **Fixed credential capture**: `koi_tenant_add` and `xsiam_tenant_add` now
+  serve a form on `127.0.0.1` (random port, one-time token, 5-minute expiry)
+  and open it in the operator's browser, instead of a native Tk window.
+  Reason: when Claude Desktop spawns the MCP server on Windows, a Tk window
+  is created but not reliably surfaced to the desktop, so the operator saw
+  nothing until the 3-minute timeout.
+- The capture URL is now relayed in the tool result when the flow does not
+  complete, so a browser that fails to open is no longer a dead end.
+- Tk remains available for environments that prefer it:
+  `python -m koi_pov_mcp.gui koi <alias> --tk`.
+
 ## 0.7.0 - 2026-07-24
 
 - **TI v2**: `koi_enrich` now queries OSV.dev (batch, exact name@version for
@@ -13,10 +26,10 @@ All notable changes to koi-pov-mcp.
   (pure Python, core dependencies) and report.pdf when WeasyPrint is
   installed. Narrative sections are caller-provided; empty ones render as
   visible `[[TO BE PROVIDED]]` placeholders.
-- **XSIAM**: optional per-tenant link via `xsiam_tenant_add` (native 3-field
-  dialog: API URL, Key ID, key, advanced checkbox; standard and advanced
-  auth). `xsiam_correlate` computes agent coverage overlap and incidents on
-  Koi-known hosts. CLI: `koi-pov-mcp xsiam add|list|test|remove`.
+- **XSIAM**: optional per-tenant link via `xsiam_tenant_add` (API URL, Key
+  ID, key, advanced checkbox; standard and advanced auth). `xsiam_correlate`
+  computes agent coverage overlap and incidents on Koi-known hosts. CLI:
+  `koi-pov-mcp xsiam add|list|test|remove`.
 - Skill 2.6.0: TI language hierarchy (KEV > EPSS > CVSS), dated intel,
   XSIAM co-presence rules, render workflow.
 
@@ -31,8 +44,8 @@ All notable changes to koi-pov-mcp.
 
 ## 0.3.1 - 2026-07-24
 
-- `koi_tenant_add`: add a tenant from the Claude interface via a native
-  masked-input dialog; key goes straight to the OS credential store.
+- `koi_tenant_add`: add a tenant from the Claude interface without the key
+  transiting through the conversation.
 
 ## 0.3.0 - 2026-07-24
 

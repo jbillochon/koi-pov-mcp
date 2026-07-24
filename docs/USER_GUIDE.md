@@ -11,11 +11,16 @@ companion skill maps your intent to the right tools.
 > "Add a new tenant for the ACME PoV"
 
 Claude asks for a short alias (e.g. `acme`) if you did not give one, then a
-**native window opens on your machine**: paste the Koi API key there (masked
-input) and press Save. The key goes straight to your OS credential store
-(Windows Credential Manager, macOS Keychain, Secret Service on Linux);
-Claude never sees it. Connectivity is tested immediately and the tenant is
-usable at once, no restart.
+**credential page opens in your browser** (served locally on 127.0.0.1, with
+a one-time token, expiring after 5 minutes). Paste the Koi API key there and
+press Save. The key goes straight to your OS credential store (Windows
+Credential Manager, macOS Keychain, Secret Service on Linux); Claude never
+sees it. Connectivity is tested immediately and the tenant is usable at
+once, no restart.
+
+If no tab opens automatically, Claude gives you the URL: open it manually
+and finish there. If the page cannot run at all, use the terminal command
+below, which does exactly the same thing.
 
 The tenant gets a dedicated environment: its own data file, snapshot
 history, and deliverables directory. Nothing is ever shared between tenants.
@@ -32,7 +37,7 @@ rotate one. Removal is available from the CLI
 
 > "Link an XSIAM tenant to acme"
 
-A native window opens with three fields: **API URL** (the tenant's
+Same browser page, with three fields: **API URL** (the tenant's
 `https://api-...` FQDN), **API Key ID**, and the **API key** (masked), plus
 an **Advanced API key** checkbox (hashed authentication). Same rules: stored
 locally, tested immediately, never through the chat.
@@ -40,7 +45,7 @@ locally, tested immediately, never through the chat.
 ### Terminal alternative
 
 Every credential operation also exists as a CLI, useful on systems without a
-graphical session:
+browser or graphical session, and as a fallback:
 
 ```bash
 koi-pov-mcp tenants add acme --test
@@ -125,7 +130,7 @@ fact first, probability second, severity last.
 
 > "Cross-reference acme with XSIAM"
 
-Requires a linked XSIAM tenant (Claude offers the dialog if there is none).
+Requires a linked XSIAM tenant (Claude offers the page if there is none).
 Returns two fact sets:
 
 - **Coverage overlap**: hosts managed by Koi, by XSIAM, by both, by only one

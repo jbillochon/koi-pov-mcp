@@ -7,7 +7,7 @@
   suspect), or wrong `command` path. On Windows check the `.exe` suffix and
   double backslashes.
 - Claude Desktop not fully restarted: quit from the tray/menu bar, not just
-  the window.
+  the window. Claude Code: exit and relaunch the session.
 
 **Installer fails on the config step**
 - The merge is loud by design: it refuses to touch an existing config that
@@ -17,8 +17,8 @@
 ## Tenants and credentials
 
 **`koi_tenants` shows no tenants**
-- None added yet: `koi-pov-mcp tenants add <alias>`, or ask Claude to "add a
-  tenant" (native dialog). Applies without restart.
+- None added yet: ask Claude to "add a tenant", or run
+  `koi-pov-mcp tenants add <alias>`. Applies without restart.
 
 **`AUTH FAILED (401)`**
 - Key rejected. Regenerate it in the Koi console, then re-add the alias
@@ -28,12 +28,17 @@
 - Alias typo. `koi-pov-mcp tenants list` (or the `koi_tenants` tool) shows
   what the server actually sees.
 
-**The credential dialog does not appear**
-- It may open behind other windows: check the taskbar.
-- "tkinter missing": the Python used to build the venv has no Tk (some
-  minimal Linux installs: `apt install python3-tk`, then reinstall). The
-  CLI fallback always works.
-- It auto-cancels after 3 minutes without input; nothing is saved.
+**No browser tab opens for the credential page**
+- Claude relays the URL in its answer: open it manually, the page is already
+  running and waits 5 minutes.
+- If there is no URL either, the capture process could not start; use the
+  terminal fallback, which is equivalent:
+  `koi-pov-mcp tenants add <alias> --test` (or `xsiam add`).
+- Note for versions before 0.7.1: capture used a native Tk window that
+  Claude Desktop did not reliably surface on Windows (the operator saw
+  nothing until the timeout). Upgrade to 0.7.1+, which uses the browser.
+- Tk is still available if preferred:
+  `python -m koi_pov_mcp.gui koi <alias> --tk`.
 
 **Keyring fallback warning**
 - No OS credential backend (headless Linux, some WSL): the key went to a
@@ -43,7 +48,7 @@
 **XSIAM `401 unauthorized`**
 - Check all three values, and whether the key is standard or advanced: a
   standard key sent with advanced auth (or the reverse) is a guaranteed 401.
-  Re-add via the dialog with the correct checkbox state, or
+  Re-add with the correct checkbox state, or
   `koi-pov-mcp xsiam add <alias> --advanced`.
 
 ## Collection
@@ -82,8 +87,10 @@
   data section had nothing collected. It is an action item, not a rendering
   bug; fix the input, not the placeholder.
 
-## Where things are
+## Logs and locations
 
+- MCP server log (Windows):
+  `%APPDATA%\Claude\logs\mcp-server-koi-pov.log`
 - State: `KOI_POV_WORKDIR`, or the OS user-data dir
   (Windows `%LOCALAPPDATA%\koi-pov-mcp`, macOS
   `~/Library/Application Support/koi-pov-mcp`, Linux
