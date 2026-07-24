@@ -12,17 +12,6 @@ from .xsiam import XsiamClient, XsiamError, correlate
 
 
 def register(mcp, resolve_tenant, tenant_dir):
-    def _xsiam_ping(alias: str) -> str:
-        x = secrets.xsiam_get(alias)
-        if not x:
-            return "No XSIAM credentials found after save (unexpected)."
-        try:
-            XsiamClient(x["api_url"], x["key_id"], x["key"],
-                        advanced=x.get("advanced", False)).ping()
-        except XsiamError as exc:
-            return f"XSIAM connectivity check failed: {exc}"
-        return "XSIAM connectivity check: OK."
-
     @mcp.tool()
     def xsiam_tenant_add(tenant: str = "default") -> str:
         """Link an XSIAM tenant to a Koi tenant, from the Claude interface.
@@ -33,11 +22,12 @@ def register(mcp, resolve_tenant, tenant_dir):
         Everything is stored locally (key in the OS credential store);
         nothing transits through the conversation.
 
-        Use when the operator wants XSIAM cross-referencing on a tenant that
-        has no link yet (koi_tenants shows xsiam_linked). Tell them a browser
-        tab is opening, and if the result mentions a URL, relay it verbatim:
-        that link is how they finish if the browser did not open. The page
-        expires after 5 minutes. Connectivity is tested on success.
+        Returns immediately with the page URL: it does NOT wait for the
+        operator. Relay the URL verbatim (their browser may not have opened
+        by itself), say the page expires in 5 minutes, and wait for them to
+        confirm they saved it. Only then verify with xsiam_status_check via
+        koi_tenants (xsiam_linked) or xsiam_correlate. Never claim the link
+        exists before that.
         """
         resolved = resolve_tenant(tenant)
         if isinstance(resolved, dict):
@@ -45,12 +35,19 @@ def register(mcp, resolve_tenant, tenant_dir):
         alias, _ = resolved
 
         result = dialog.launch("xsiam", alias)
-        if result["code"] != 0:
-            return dialog.describe(
-                result, alias, "XSIAM credential",
-                f"koi-pov-mcp xsiam add {alias} --test",
+        cli = f"koi-pov-mcp xsiam add {alias} --test"
+        if result["error"]:
+            return (
+                f"Could not open the credential page: {result['error']}. "
+                f"Terminal fallback: {cli}"
             )
-        return f"XSIAM tenant linked to '{alias}'. " + _xsiam_ping(alias)
+        return (
+            f"XSIAM credential page opened for tenant '{alias}'. "
+            f"If no browser tab appeared, open this link: {result['url']} "
+            "(expires in 5 minutes). Fields: API URL, API Key ID, API key, "
+            "and tick 'Advanced API key' if it is an advanced key. "
+            "Nothing is saved until it is submitted."
+        )
 
     @mcp.tool()
     def xsiam_correlate(tenant: str = "default", days: int = 30) -> dict:
