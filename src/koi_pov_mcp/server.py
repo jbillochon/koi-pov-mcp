@@ -2,18 +2,15 @@
 koi-pov-mcp server (stdio), multi-tenant.
 
 Exposes Koi PoV collection as MCP tools for Claude Desktop / Claude Code.
-Credentials come from the environment, never from the chat:
+Credentials never transit through the chat. Tenants come from, in order of
+precedence:
 
-  KOI_API_KEY               -> tenant alias "default"
-  KOI_API_KEY_<ALIAS>       -> tenant alias "<alias>" (lowercased)
-  KOI_BASE_URL[_<ALIAS>]    -> optional per-tenant base URL override
-
-Example env block for an SE running several PoVs in parallel:
-
-  "env": {
-    "KOI_API_KEY_ACME":   "...",
-    "KOI_API_KEY_GLOBEX": "..."
-  }
+  1. Environment variables in the MCP server env block:
+     KOI_API_KEY (-> alias "default"), KOI_API_KEY_<ALIAS>,
+     optional KOI_BASE_URL[_<ALIAS>] overrides.
+  2. The local credential store, managed from a terminal with
+     `koi-pov-mcp tenants add <alias>` (OS keyring, or a permission-restricted
+     file as fallback). Store changes apply immediately, no restart.
 
 State: one pov_report.json per tenant, under <workdir>/<alias>/
 (KOI_POV_WORKDIR, or the OS user-data dir by default). Collection domains
@@ -24,19 +21,14 @@ never share state; a deliverable is always built from exactly one tenant.
 from __future__ import annotations
 
 import os
-import re
 from dataclasses import asdict
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
-from platformdirs import user_data_dir
 
+from . import secrets
 from .client import KoiAuthError, KoiAPIError, KoiClient
 from .collector import PoVCollector, PoVMeta, PoVReport
-
-APP_NAME = "koi-pov-mcp"
-KEY_PREFIX = "KOI_API_KEY_"
-ALIAS_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 
 mcp = FastMCP("koi-pov")
 
@@ -54,51 +46,25 @@ DOMAINS = {
     "agent_activity": "collect_agent_activity",
 }
 
-
-# ---------------------------------------------------------------------- #
-# Tenant registry (from environment)
-# ---------------------------------------------------------------------- #
-
-
-def _tenants() -> dict[str, dict[str, str]]:
-    """Alias -> {key, base_url} discovered from the environment."""
-    found: dict[str, dict[str, str]] = {}
-    if os.environ.get("KOI_API_KEY"):
-        found["default"] = {
-            "key": os.environ["KOI_API_KEY"],
-            "base_url": os.environ.get("KOI_BASE_URL", ""),
-        }
-    for name, value in os.environ.items():
-        if not name.startswith(KEY_PREFIX) or not value:
-            continue
-        alias = name[len(KEY_PREFIX):].lower()
-        if not ALIAS_RE.match(alias):
-            continue
-        found[alias] = {
-            "key": value,
-            "base_url": os.environ.get(f"KOI_BASE_URL_{alias.upper()}", "")
-            or os.environ.get("KOI_BASE_URL", ""),
-        }
-    return found
+ADD_HINT = (
+    "Add tenants from a terminal with: koi-pov-mcp tenants add <alias> "
+    "(the key is prompted with hidden input and stored in the OS credential "
+    "store; it applies immediately, no restart). Never paste keys in the "
+    "conversation."
+)
 
 
 def _resolve_tenant(tenant: str) -> tuple[str, dict[str, str]] | dict:
     """Return (alias, creds) or an error dict ready to hand back to the model."""
     alias = (tenant or "default").strip().lower()
-    if not ALIAS_RE.match(alias):
+    if not secrets.ALIAS_RE.match(alias):
         return {"error": f"Invalid tenant alias '{tenant}'."}
-    registry = _tenants()
+    registry = secrets.all_tenants()
     if not registry:
-        return {
-            "error": (
-                "NOT CONFIGURED: no Koi API key found. Set KOI_API_KEY "
-                "(single tenant) or KOI_API_KEY_<ALIAS> entries (multi-tenant) "
-                "in the MCP server env block, then restart Claude."
-            )
-        }
+        return {"error": f"NOT CONFIGURED: no Koi tenant found. {ADD_HINT}"}
     if alias not in registry:
         return {
-            "error": f"Unknown tenant '{alias}'.",
+            "error": f"Unknown tenant '{alias}'. {ADD_HINT}",
             "configured_tenants": sorted(registry),
         }
     return alias, registry[alias]
@@ -117,9 +83,7 @@ def _client_for(creds: dict[str, str]) -> KoiClient:
 
 
 def _workdir() -> Path:
-    p = Path(os.environ.get("KOI_POV_WORKDIR") or user_data_dir(APP_NAME))
-    p.mkdir(parents=True, exist_ok=True)
-    return p
+    return secrets.store_dir()
 
 
 def _report_path(alias: str) -> Path:
@@ -154,38 +118,37 @@ def _save_report(alias: str, report: PoVReport) -> str:
 
 @mcp.tool()
 def koi_tenants() -> dict:
-    """List the Koi tenants configured in the server environment, and whether
-    each already has a collected report. Call this first when the operator
-    manages several PoVs, and ask which tenant to work on if more than one is
-    configured. Keys themselves are never returned."""
-    registry = _tenants()
+    """List the configured Koi tenants and whether each already has a
+    collected report. Call this first when the operator manages several PoVs,
+    and ask which tenant to work on if more than one is configured. Keys
+    themselves are never returned. To add a tenant, the operator runs
+    `koi-pov-mcp tenants add <alias>` in a terminal (never in the chat);
+    it applies immediately, no restart needed."""
+    registry = secrets.all_tenants()
     tenants = []
     for alias in sorted(registry):
         report_file = _workdir() / alias / "pov_report.json"
-        entry = {"alias": alias, "has_report": report_file.exists()}
+        entry = {
+            "alias": alias,
+            "source": registry[alias]["source"],
+            "has_report": report_file.exists(),
+        }
         if report_file.exists():
             try:
                 entry["customer"] = PoVReport.from_json(str(report_file)).meta.customer_name
             except Exception:  # noqa: BLE001 - listing must not fail on one bad file
                 entry["customer"] = "(unreadable report)"
         tenants.append(entry)
-    return {
-        "tenants": tenants,
-        "count": len(tenants),
-        "note": (
-            "Add tenants with KOI_API_KEY_<ALIAS> entries in the MCP server "
-            "env block. Never paste keys in the conversation."
-        ),
-    }
+    return {"tenants": tenants, "count": len(tenants), "note": ADD_HINT}
 
 
 @mcp.tool()
 def koi_ping(tenant: str = "default") -> str:
     """Check Koi API connectivity and key validity for one tenant.
 
-    Call this before any collection on that tenant. If it fails with an auth
-    error, the operator must fix the corresponding KOI_API_KEY[_<ALIAS>] entry
-    in the MCP server environment. Never ask for the key in chat.
+    Call this before any collection on that tenant. If it fails, direct the
+    operator to `koi-pov-mcp tenants add <alias>` in a terminal (re-adding
+    overwrites the key). Never ask for the key in chat.
     """
     resolved = _resolve_tenant(tenant)
     if isinstance(resolved, dict):
@@ -199,7 +162,7 @@ def koi_ping(tenant: str = "default") -> str:
     except KoiAuthError:
         return (
             f"AUTH FAILED for tenant '{alias}': the API key was rejected (401). "
-            "Fix the key in the MCP server env and restart Claude."
+            f"Re-add it from a terminal: koi-pov-mcp tenants add {alias}"
         )
     except KoiAPIError as exc:
         return f"API ERROR for tenant '{alias}': {exc}"

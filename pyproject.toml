@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "koi-pov-mcp"
-version = "0.2.0"
+version = "0.3.0"
 description = "MCP server to collect Cortex AES (Koi) Proof of Value evidence over the Koi API, multi-tenant"
 readme = "README.md"
 license = {text = "MIT"}
@@ -14,6 +14,7 @@ dependencies = [
     "mcp>=1.2.0",
     "requests>=2.31.0",
     "platformdirs>=4.0.0",
+    "keyring>=24.0.0",
 ]
 
 [project.optional-dependencies]
@@ -22,7 +23,7 @@ render = ["python-pptx>=1.0.2", "python-docx>=1.1.0"]
 pdf = ["weasyprint>=62.0"]
 
 [project.scripts]
-koi-pov-mcp = "koi_pov_mcp.server:main"
+koi-pov-mcp = "koi_pov_mcp.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
