@@ -15,51 +15,58 @@ def register(mcp, resolve_tenant, report_json_fn, tenant_dir):
         executive_summary: str = "",
         recommendations: str = "",
         success_criteria: list[dict] | None = None,
-        findings: list[dict] | None = None,
+        key_findings: list[dict] | None = None,
         attack_scenarios: list[dict] | None = None,
         recommended_actions: list[dict] | None = None,
         threat_context: list[dict] | None = None,
+        data_gaps: list[str] | None = None,
     ) -> dict:
         """Render the customer deliverables for one tenant into its
         deliverables/ directory: report.docx, deck.pptx, and report.pdf when
-        WeasyPrint is available. Use when the operator asks to "generate the
-        report / deck / word / pdf for tenant X" in any language.
+        the PDF engine is available. Use when the operator asks to "generate
+        the report / deck / word / pdf for tenant X" in any language.
 
         Every number comes from the tenant's collected JSON (+ enrichment).
-        Narrative goes through the arguments and MUST follow the skill's rules:
-        write from pov_report_json only, and leave an argument empty rather
-        than inventing, because the renderer inserts a visible
-        [[TO BE PROVIDED]] placeholder.
+        NEVER write a figure into narrative prose: quantities belong to the
+        snapshot, and any number found in prose is reported back as a
+        violation. Leave an argument empty rather than inventing, because the
+        renderer inserts a visible [[TO BE PROVIDED]] placeholder.
 
         Narrative arguments:
-        - headline: one sentence naming the central problem.
+        - headline: the single most important thing, in one sentence.
         - executive_summary, recommendations: plain text.
         - success_criteria: [{criterion, verdict, evidence}].
-        - findings: [{title, severity, confidence, mitre[], narrative, scope,
-          evidence[]}]. severity is critical|high|medium|low|informational,
-          confidence is confirmed|probable|possible|observation.
-        - attack_scenarios: [{title, likelihood, mitre[], chain[], impact,
-          breaks_chain, evidence[]}]. likelihood is likely|possible|unlikely,
-          chain needs at least two steps. Scenarios are illustrative paths, not
-          incidents that occurred, and the renderer says so.
-        - recommended_actions: [{rank, title, effort, rationale, outcome,
-          capability}]. effort is low|medium|high effort. Rank by risk reduced,
-          not by ease.
-        - threat_context: [{title, body}]. Public threat activity from model
-          knowledge; rendered under a banner stating it was NOT verified
-          against the tenant. Never put a tenant figure in it.
+        - key_findings: [{title, severity, confidence, narrative, evidence[],
+          mitre_techniques[], affected_scope}]. severity is
+          critical|high|medium|low|info, confidence is
+          confirmed|likely|possible.
+        - attack_scenarios: [{title, steps[], impact, likelihood,
+          enabling_evidence[], mitre_techniques[], breaks_at}]. At least two
+          steps. Hypothetical paths given observed exposure, never incidents
+          that occurred, and the renderer labels them as such.
+        - recommended_actions: [{title, rationale, priority, effort,
+          platform_capability, expected_outcome, addresses_findings[]}].
+          priority 1 is most urgent; effort is low|medium|high. Order by risk
+          reduced, not by ease.
+        - threat_context: [{campaign_or_pattern, relevance, tenant_link[]}].
+          Public threat activity from model knowledge, rendered under a caveat
+          stating it was NOT verified against the tenant.
+        - data_gaps: short strings naming where the data was thin. Honesty
+          here is a feature, not an admission.
 
-        Every evidence entry is {kind, source, detail} where kind is
-        inventory_item, koi_finding, policy or metric, and source names
-        something that exists in pov_report_json. Evidence that cannot be found
-        there is dropped, and a finding or scenario left without evidence is
-        dropped with it.
+        Evidence is {kind, reference, note} where kind is inventory_item,
+        koi_finding, governance, agent_activity, cve or contextual. reference
+        names something present in pov_report_json: an item_id or item name, a
+        finding label, a policy name, an agent or host, or a CVE collected in
+        the enrichment. Unverifiable evidence is stripped, and a finding or
+        scenario left with none is dropped entirely. contextual evidence is
+        exempt by design.
 
-        Report exactly what came back: 'produced' formats with paths, 'skipped'
-        formats with the reason, and 'dropped' narrative. A successful call
-        with skipped formats is NOT a full delivery. A non-empty 'dropped' list
-        means claims did not survive verification and MUST be shown to the
-        operator rather than quietly ignored.
+        Report exactly what came back: 'produced' formats with paths,
+        'skipped' formats with the reason, and 'validation'. A successful call
+        with skipped formats is NOT a full delivery. A non-empty
+        validation.dropped or validation.issues means claims did not survive
+        verification and MUST be shown to the operator, never quietly ignored.
         """
         resolved = resolve_tenant(tenant)
         if isinstance(resolved, dict):
@@ -81,10 +88,11 @@ def register(mcp, resolve_tenant, report_json_fn, tenant_dir):
             recommendations=recommendations,
             success_criteria=success_criteria,
             headline=headline,
-            findings=findings,
+            key_findings=key_findings,
             attack_scenarios=attack_scenarios,
             recommended_actions=recommended_actions,
             threat_context=threat_context,
+            data_gaps=data_gaps,
         )
         result["tenant"] = alias
         return result
