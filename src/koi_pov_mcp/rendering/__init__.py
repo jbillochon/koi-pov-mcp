@@ -73,6 +73,7 @@ def render(
         data_gaps=data_gaps,
     )
     narrative["supply_chain"] = supply_chain_view(data)
+    narrative["validation"] = validation
 
     builders = {
         "pptx": ("deck.pptx", build_deck),
