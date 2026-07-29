@@ -41,23 +41,26 @@ _RUNNING: list[subprocess.Popen] = []
 
 
 def interpreter() -> str:
-    """Return a real Python interpreter, not a console-script wrapper.
+    """Return a real Python interpreter that can import this package.
 
-    In a venv the interpreter sits next to the wrapper in Scripts/ (Windows)
-    or bin/ (POSIX), so the sibling lookup covers every layout this ships in.
+    Order matters. The venv's own interpreter sits next to the console-script
+    wrapper, so the sibling lookup comes first: ``sys._base_executable``
+    points at the base installation, where this package is not installed, and
+    trying it first resolves to an interpreter that cannot run the capture
+    page at all.
     """
     exe = Path(sys.executable)
     if exe.stem.lower().startswith("python"):
         return str(exe)
 
-    base = getattr(sys, "_base_executable", "")
-    if base and Path(base).stem.lower().startswith("python"):
-        return base
-
     for name in ("python.exe", "pythonw.exe", "python3", "python"):
         candidate = exe.parent / name
         if candidate.exists():
             return str(candidate)
+
+    base = getattr(sys, "_base_executable", "")
+    if base and Path(base).stem.lower().startswith("python"):
+        return base
 
     return sys.executable
 
