@@ -9,8 +9,10 @@ workstation, so the PDF is drawn with reportlab against the same print
 palette.
 
 Additions specific to this project: a success-criteria scorecard, threat
-intelligence sections (KEV / EPSS / CVSS, OSV, ATT&CK), and null-awareness -
-a figure whose domain was never collected reads "not measured", never 0.
+intelligence sections (KEV / EPSS / CVSS, OSV, ATT&CK), null-awareness - a
+figure whose domain was never collected reads "not measured", never 0 - and a
+structured narrative contract (see narrative.py) whose evidence is verified
+against the collected data before anything is written.
 """
 
 from __future__ import annotations
@@ -19,25 +21,47 @@ from pathlib import Path
 
 from .deck import build_deck
 from .docx_report import build_docx
+from .narrative import normalise
 from .pdf_report import build_pdf
 
-__all__ = ["render", "build_deck", "build_docx", "build_pdf"]
+__all__ = ["render", "build_deck", "build_docx", "build_pdf", "normalise"]
 
 
-def render(data: dict, out_dir: Path, formats: list[str],
-           executive_summary: str = "", recommendations: str = "",
-           success_criteria: list[dict] | None = None) -> dict:
-    """Render the requested formats. Returns {'produced': {...}, 'skipped': {...}}."""
+def render(
+    data: dict,
+    out_dir: Path,
+    formats: list[str],
+    executive_summary: str = "",
+    recommendations: str = "",
+    success_criteria: list[dict] | None = None,
+    headline: str = "",
+    findings: list[dict] | None = None,
+    attack_scenarios: list[dict] | None = None,
+    recommended_actions: list[dict] | None = None,
+    threat_context: list[dict] | None = None,
+) -> dict:
+    """Render the requested formats.
+
+    Returns {'produced': {...}, 'skipped': {...}, 'dropped': [...]} where
+    'dropped' lists narrative blocks and evidence removed for lack of traceable
+    backing in the collected data.
+    """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     produced: dict[str, str] = {}
     skipped: dict[str, str] = {}
 
-    narrative = {
-        "executive_summary": (executive_summary or "").strip(),
-        "recommendations": (recommendations or "").strip(),
-        "success_criteria": success_criteria or [],
-    }
+    narrative, dropped = normalise(
+        data,
+        headline=headline,
+        executive_summary=executive_summary,
+        recommendations=recommendations,
+        success_criteria=success_criteria,
+        findings=findings,
+        attack_scenarios=attack_scenarios,
+        recommended_actions=recommended_actions,
+        threat_context=threat_context,
+    )
 
     builders = {
         "pptx": ("deck.pptx", build_deck),
@@ -59,4 +83,4 @@ def render(data: dict, out_dir: Path, formats: list[str],
         except Exception as exc:  # noqa: BLE001 - one format must not sink the others
             skipped[fmt] = f"{type(exc).__name__}: {exc}"
 
-    return {"produced": produced, "skipped": skipped}
+    return {"produced": produced, "skipped": skipped, "dropped": dropped}
