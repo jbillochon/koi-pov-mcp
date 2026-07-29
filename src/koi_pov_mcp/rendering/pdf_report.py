@@ -5,6 +5,10 @@ povplatform renders its PDF with WeasyPrint from the HTML report. WeasyPrint
 needs system GTK, which a plain Windows workstation does not have, so this
 draws the same document with reportlab: pure Python, identical print palette,
 same section order as the DOCX.
+
+The analytical sections (supply chain, findings, attack scenarios,
+recommended actions, threat context) live in pdf_sections.py; this file owns
+the document, the palette and the formatting helpers, and hands them over.
 """
 
 from __future__ import annotations
@@ -13,6 +17,7 @@ import logging
 from pathlib import Path
 from xml.sax.saxutils import escape as _escape
 
+from . import pdf_sections
 from .common import NOT_MEASURED, Data
 
 log = logging.getLogger(__name__)
@@ -40,6 +45,8 @@ RISK_COLOUR = {
     "low": TEAL,
     "pending": GREY,
 }
+
+SECTION_PALETTE = {**RISK_COLOUR, "info": GREY, "muted": LIGHT}
 
 VERDICT_COLOUR = {
     "met": TEAL_DARK,
@@ -79,6 +86,12 @@ def build_pdf(data: dict, out_path: str, narrative: dict | None = None) -> str:
                              fontSize=9, textColor=colors.HexColor(GREY))
     note_st = ParagraphStyle("note", parent=body, fontName="Helvetica-Oblique",
                              fontSize=8, textColor=colors.HexColor(LIGHT))
+    tag_st = ParagraphStyle("tag", parent=body, fontSize=7.5, leading=10,
+                            spaceAfter=3)
+    headline_st = ParagraphStyle("headline", parent=body, fontSize=12,
+                                 leading=16, fontName="Helvetica-Bold",
+                                 textColor=colors.HexColor(TEAL_DARK),
+                                 spaceAfter=8)
     cell = ParagraphStyle("cell", parent=body, fontSize=8, leading=10.5,
                           spaceAfter=0)
     cell_head = ParagraphStyle("cellhead", parent=cell,
@@ -109,6 +122,16 @@ def build_pdf(data: dict, out_path: str, narrative: dict | None = None) -> str:
         for chunk in str(text).split("\n"):
             if chunk.strip():
                 story.append(Paragraph(esc(chunk.strip()), style))
+
+    def heading(text, level=1):
+        story.append(Paragraph(esc(text), h1 if level == 1 else h2))
+
+    def page_break():
+        story.append(PageBreak())
+
+    def tag_paragraph(markup: str):
+        """Pre-built markup; the caller escapes anything that needs it."""
+        return Paragraph(markup, tag_st)
 
     def table(headers, rows, weights=None, colour_col=None, palette=None):
         if not rows:
@@ -147,6 +170,12 @@ def build_pdf(data: dict, out_path: str, narrative: dict | None = None) -> str:
         story.append(t)
         story.append(Spacer(1, 7))
 
+    kit = pdf_sections.Kit(
+        story=story, para=para, table=table, page_break=page_break,
+        h1=h1, h2=h2, body=body, lede=lede_st, note=note_st,
+        heading=heading, tag_style=tag_paragraph, palette=SECTION_PALETTE,
+    )
+
     # ---------------------------------------------------------------- cover
     story.append(Spacer(1, 60 * mm))
     story.append(Paragraph("Cortex AES", cover_title))
@@ -165,6 +194,8 @@ def build_pdf(data: dict, out_path: str, narrative: dict | None = None) -> str:
     story.append(Paragraph("Executive summary", h1))
     para("What the platform found across the estate during this Proof of Value.",
          lede_st)
+    if n.get("headline"):
+        para(n["headline"], headline_st)
     if n.get("executive_summary"):
         para(n["executive_summary"])
     else:
@@ -204,6 +235,10 @@ def build_pdf(data: dict, out_path: str, narrative: dict | None = None) -> str:
          "through its API. Endpoint inventory is gathered by a script the "
          "tenant's existing EDR or MDM runs periodically, so no additional "
          "agent was deployed. Risk scores come from the Koi risk engine.")
+    para("The analytical sections that follow were written from that collected "
+         "data. Every claim cites the specific items it rests on, and those "
+         "citations were verified against the collected data before this "
+         "report was generated; claims that could not be traced were removed.")
 
     # ------------------------------------------------------ success criteria
     story.append(PageBreak())
@@ -248,9 +283,15 @@ def build_pdf(data: dict, out_path: str, narrative: dict | None = None) -> str:
                  "analysis. Their eventual scores are not reflected above.",
                  note_st)
 
+    # --------------------------------------------------------- supply chain
+    pdf_sections.supply_chain(kit, n.get("supply_chain") or {})
+
+    # -------------------------------------------------------- risk inventory
     top = r.rows("top_risk_items")
     if top:
-        story.append(Paragraph("Highest-risk items", h2))
+        story.append(PageBreak())
+        story.append(Paragraph("Highest-risk items", h1))
+        para("Scored by the Koi risk engine, ordered by score.", lede_st)
         rows = []
         for item in top[:20]:
             score = item.get("risk")
@@ -277,6 +318,10 @@ def build_pdf(data: dict, out_path: str, narrative: dict | None = None) -> str:
                 ", ".join((i.get("findings") or [])[:3])[:52]]
                for i in action[:15]],
               weights=[3, 1.8, 1, 1, 3.2], colour_col=2)
+
+    # ------------------------------------------------ findings and scenarios
+    pdf_sections.findings(kit, n.get("key_findings") or [])
+    pdf_sections.scenarios(kit, n.get("attack_scenarios") or [])
 
     # ------------------------------------------------------- threat intel
     enr = r.enrichment
@@ -432,14 +477,10 @@ def build_pdf(data: dict, out_path: str, narrative: dict | None = None) -> str:
                    for h in hosts[:20]],
                   weights=[3, 1])
 
-    # ---------------------------------------------------- recommended actions
-    story.append(PageBreak())
-    story.append(Paragraph("Recommended actions", h1))
-    para("Ordered by risk reduced, not by ease of implementation.", lede_st)
-    if n.get("recommendations"):
-        para(n["recommendations"])
-    else:
-        para("[[TO BE PROVIDED: recommendations]]")
+    # ---------------------------------------- actions and threat context
+    pdf_sections.actions(kit, n.get("recommended_actions") or [],
+                         fallback=n.get("recommendations") or "")
+    pdf_sections.threat_context(kit, n.get("threat_context") or [])
 
     # -------------------------------------------------------------- appendix
     story.append(PageBreak())
@@ -451,6 +492,9 @@ def build_pdf(data: dict, out_path: str, narrative: dict | None = None) -> str:
               [[str(f.get("finding")).replace("_", " "),
                 format(int(f.get("count") or 0), ",")] for f in freq[:15]],
               weights=[4, 1])
+
+    pdf_sections.data_gaps(kit, n.get("data_gaps") or [])
+
     if r.missing:
         story.append(Paragraph("Domains not collected", h2))
         para(", ".join(sorted(r.missing)))
@@ -465,6 +509,7 @@ def build_pdf(data: dict, out_path: str, narrative: dict | None = None) -> str:
          "tenant at the time of collection. Narrative sections are written by "
          "the consultant from that same data; anything left unwritten appears "
          "as a visible placeholder rather than being invented.", note_st)
+    pdf_sections.validation_note(kit, n.get("validation"))
 
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     doc.build(story)
