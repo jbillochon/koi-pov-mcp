@@ -313,7 +313,13 @@ def _clean_scenarios(raw: Any, v: _Verifier) -> list[dict]:
         if len(steps) < 2:
             v.dropped.append(f"scenario: {title} (fewer than two steps)")
             continue
-        evidence = v.clean_evidence(block.get("enabling_evidence"), location)
+        # The schema field is enabling_evidence, but "evidence" is the obvious
+        # thing to write and findings use exactly that. Accept both on input
+        # rather than silently dropping a whole scenario over a field name.
+        raw_evidence = block.get("enabling_evidence")
+        if raw_evidence is None:
+            raw_evidence = block.get("evidence")
+        evidence = v.clean_evidence(raw_evidence, location)
         if not evidence:
             v.dropped.append(f"scenario: {title}")
             continue
@@ -341,7 +347,7 @@ def _clean_actions(raw: Any, v: _Verifier) -> list[dict]:
             v.dropped.append(f"recommended_actions[{position}]: no title")
             continue
         try:
-            priority = int(block.get("priority") or position + 1)
+            priority = int(block.get("priority") or block.get("rank") or position + 1)
         except (TypeError, ValueError):
             priority = position + 1
         out.append({
