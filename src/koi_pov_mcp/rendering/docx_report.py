@@ -5,6 +5,10 @@ Ported from jbillochon/povplatform (rendering/report.py build_docx): same
 print palette, same section order, built natively with python-docx rather
 than converted from HTML, because the point of shipping a DOCX is that
 someone can edit it.
+
+The analytical sections (supply chain, findings, attack scenarios,
+recommended actions, threat context) live in docx_sections.py; this file owns
+the document, the palette and the formatting helpers, and hands them over.
 """
 
 from __future__ import annotations
@@ -12,6 +16,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from . import docx_sections
 from .common import NOT_MEASURED, Data
 
 log = logging.getLogger(__name__)
@@ -31,6 +36,8 @@ RISK_COLOUR = {
     "low": TEAL,
     "pending": GREY,
 }
+
+SECTION_PALETTE = {**RISK_COLOUR, "info": GREY, "muted": LIGHT}
 
 VERDICT_COLOUR = {
     "met": TEAL_DARK,
@@ -92,6 +99,9 @@ def build_docx(data: dict, out_path: str, narrative: dict | None = None) -> str:
         colour(run, LIGHT)
         return p
 
+    def para(text: str):
+        return doc.add_paragraph(text)
+
     def table(headers, rows, colour_col=None, palette=None):
         t = doc.add_table(rows=1, cols=len(headers))
         t.style = "Light Grid Accent 1"
@@ -112,6 +122,11 @@ def build_docx(data: dict, out_path: str, narrative: dict | None = None) -> str:
                         colour(run, hexcode)
                         run.bold = True
         return t
+
+    kit = docx_sections.Kit(
+        doc=doc, heading=heading, lede=lede, note=note, table=table,
+        para=para, palette=SECTION_PALETTE,
+    )
 
     # ---------------------------------------------------------------- cover
     title = doc.add_paragraph()
@@ -144,10 +159,17 @@ def build_docx(data: dict, out_path: str, narrative: dict | None = None) -> str:
     heading("Executive summary")
     lede("What the platform found across the estate during this Proof of Value.")
 
+    if n.get("headline"):
+        p = doc.add_paragraph()
+        run = p.add_run(n["headline"])
+        run.bold = True
+        run.font.size = Pt(13)
+        colour(run, TEAL_DARK)
+
     if n.get("executive_summary"):
-        for para in n["executive_summary"].split("\n"):
-            if para.strip():
-                doc.add_paragraph(para.strip())
+        for chunk in n["executive_summary"].split("\n"):
+            if chunk.strip():
+                doc.add_paragraph(chunk.strip())
     else:
         doc.add_paragraph(
             "[[TO BE PROVIDED: executive summary]] \u2014 the figures below were "
@@ -200,6 +222,12 @@ def build_docx(data: dict, out_path: str, narrative: dict | None = None) -> str:
         "was deployed. Risk scores come from the Koi risk engine. Threat "
         "intelligence, where present, comes from public sources named in that "
         "section and is dated."
+    )
+    doc.add_paragraph(
+        "The analytical sections that follow were written from that collected "
+        "data. Every claim cites the specific items it rests on, and those "
+        "citations were verified against the collected data before this report "
+        "was generated; claims that could not be traced were removed."
     )
 
     # ------------------------------------------------------- success criteria
@@ -255,6 +283,9 @@ def build_docx(data: dict, out_path: str, narrative: dict | None = None) -> str:
     elif not r.measured("items_by_risk"):
         doc.add_paragraph("Inventory was " + NOT_MEASURED + " during this PoV.")
 
+    # --------------------------------------------------------- supply chain
+    docx_sections.supply_chain(kit, n.get("supply_chain") or {})
+
     # --------------------------------------------------------- risk inventory
     top = r.rows("top_risk_items")
     if top:
@@ -290,7 +321,11 @@ def build_docx(data: dict, out_path: str, narrative: dict | None = None) -> str:
             colour_col=2,
         )
 
-    # -------------------------------------------------------- threat context
+    # ------------------------------------------------ findings and scenarios
+    docx_sections.findings(kit, n.get("key_findings") or [])
+    docx_sections.scenarios(kit, n.get("attack_scenarios") or [])
+
+    # ---------------------------------------------------- threat intelligence
     enr = r.enrichment
     if enr:
         doc.add_page_break()
@@ -456,16 +491,10 @@ def build_docx(data: dict, out_path: str, narrative: dict | None = None) -> str:
                   [[h.get("host", ""), format(int(h.get("incidents", 0)), ",")]
                    for h in hosts[:20]])
 
-    # ---------------------------------------------------- recommended actions
-    doc.add_page_break()
-    heading("Recommended actions")
-    lede("Ordered by risk reduced, not by ease of implementation.")
-    if n.get("recommendations"):
-        for para in n["recommendations"].split("\n"):
-            if para.strip():
-                doc.add_paragraph(para.strip(), style="List Bullet")
-    else:
-        doc.add_paragraph("[[TO BE PROVIDED: recommendations]]")
+    # ---------------------------------------- actions and threat context
+    docx_sections.actions(kit, n.get("recommended_actions") or [],
+                          fallback=n.get("recommendations") or "")
+    docx_sections.threat_context(kit, n.get("threat_context") or [])
 
     # -------------------------------------------------------------- appendix
     doc.add_page_break()
@@ -477,6 +506,8 @@ def build_docx(data: dict, out_path: str, narrative: dict | None = None) -> str:
         table(["Finding", "Occurrences"],
               [[str(f.get("finding")).replace("_", " "),
                 format(int(f.get("count") or 0), ",")] for f in freq[:15]])
+
+    docx_sections.data_gaps(kit, n.get("data_gaps") or [])
 
     if r.missing:
         heading("Domains not collected", 2)
@@ -497,6 +528,7 @@ def build_docx(data: dict, out_path: str, narrative: dict | None = None) -> str:
         "the consultant from that same data; anything left unwritten appears "
         "as a visible placeholder rather than being invented."
     )
+    docx_sections.validation_note(kit, n.get("validation"))
 
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     doc.save(out_path)
