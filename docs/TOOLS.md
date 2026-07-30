@@ -6,10 +6,17 @@ lowercase letters, digits, `-`, `_`, max 40 chars, start alphanumeric.
 ## Tenant management
 
 ### koi_tenant_add(alias, base_url="")
-Opens a native masked-input dialog on the operator's machine; the Koi key
-goes straight to the OS credential store. Creates the tenant environment,
-auto-pings. Returns a status string. Dialog auto-cancels after 3 minutes;
-exit paths: saved / cancelled / no-tkinter (CLI fallback suggested).
+Starts a local credential page and returns its URL for the operator to open;
+the Koi key goes from that page straight to the OS credential store and never
+transits the conversation. The call returns as soon as the page reports its
+URL, it does not wait for the form to be filled. The page expires after 5
+minutes and nothing is saved until it is submitted, so the tenant is only
+usable once `koi_ping` confirms it.
+
+The page writes its URL to a log file in the temp directory
+(`koi-pov-capture-koi-<alias>.log`) and the tool polls that file. If the URL
+does not arrive within 30 seconds the tool says so and gives the log path
+rather than reporting failure: a browser tab has usually already opened.
 
 ### koi_tenants()
 Lists aliases with: `source` (store|env), `has_report`, `snapshots` count,
@@ -21,9 +28,9 @@ Auth/connectivity probe (1-item devices call). Distinguishes NOT CONFIGURED,
 unknown alias, AUTH FAILED (401), API ERROR, OK.
 
 ### xsiam_tenant_add(tenant)
-Native 3-field dialog (API URL prefilled `https://api-`, Key ID, masked key,
-Advanced checkbox); stores locally, auto-pings XSIAM. One XSIAM link per Koi
-alias; re-adding overwrites.
+Same credential-page flow for the XSIAM API URL, key ID and key; stores
+locally and auto-pings XSIAM. One XSIAM link per Koi alias; re-adding
+overwrites.
 
 ## Collection and state
 
@@ -78,12 +85,54 @@ Host-level co-presence only; no causal claims.
 
 ## Rendering
 
-### render_deliverables(tenant, formats=None, executive_summary="", recommendations="", success_criteria=None)
-Renders into `<tenant>/deliverables/`: `report.docx`, `deck.pptx` (14
-slides), `report.pdf` (WeasyPrint required). `success_criteria` is a list of
-`{criterion, verdict, evidence}`. Empty narrative renders as visible
-`[[TO BE PROVIDED]]`. Returns `produced` (format -> path) and `skipped`
-(format -> reason); skipped formats must be announced to the operator.
+### render_deliverables(tenant, formats=None, headline="", executive_summary="", recommendations="", success_criteria=None, key_findings=None, attack_scenarios=None, recommended_actions=None, threat_context=None, data_gaps=None)
+
+Renders into `<tenant>/deliverables/`: `report.docx`, `report.pdf`
+(reportlab, no system dependency) and `deck.pptx`. Slide and page counts vary
+with the narrative supplied.
+
+Data sections (discovery, supply chain, risk inventory, governance,
+remediation, agentic activity, threat intelligence) are rendered from the
+collected data with no input at all. The arguments below carry only what
+requires judgement.
+
+| Argument | Shape |
+|---|---|
+| `headline` | One sentence naming the central problem. No figures. |
+| `executive_summary`, `recommendations` | Plain text. `recommendations` is the legacy free-text fallback used only when `recommended_actions` is empty. |
+| `success_criteria` | `[{criterion, verdict, evidence}]` |
+| `key_findings` | `[{title, severity, confidence, narrative, evidence[], mitre_techniques[], affected_scope}]`; severity `critical\|high\|medium\|low\|info`, confidence `confirmed\|likely\|possible` |
+| `attack_scenarios` | `[{title, steps[], impact, likelihood, enabling_evidence[], mitre_techniques[], breaks_at}]`; at least two steps |
+| `recommended_actions` | `[{title, rationale, priority, effort, platform_capability, expected_outcome, addresses_findings[]}]`; effort `low\|medium\|high`, priority 1 = most urgent |
+| `threat_context` | `[{campaign_or_pattern, relevance, tenant_link[]}]`; rendered under an explicit "NOT verified against your tenant" banner |
+| `data_gaps` | Short strings naming what the report could not establish |
+
+**Evidence** is `{kind, reference, note}` where `kind` is `inventory_item`,
+`koi_finding`, `governance`, `agent_activity`, `cve` or `contextual`, and
+`reference` names something present in `pov_report_json`. Cite items **by
+name**: `item_id` is only present on `action_candidates`. The `note` carries
+the specificity and is rendered, so it is worth writing.
+
+Citations are checked against an index built from the snapshot before
+anything is written. Unverifiable evidence is stripped, and a finding or
+scenario left with none is dropped entirely. `contextual` is exempt by
+design.
+
+Empty narrative renders as a visible `[[TO BE PROVIDED]]` placeholder rather
+than being invented.
+
+**Returns** `produced` (format -> path), `skipped` (format -> reason) and
+`validation`:
+
+```
+{checked_citations, verified_citations, verification_rate, dropped[], issues[]}
+```
+
+`issues[].kind` is `unknown_item`, `unknown_cve`, `bad_mitre`,
+`empty_evidence` or `prose_number`. The last one flags a figure written into
+narrative prose, which is a violation: every number shown to a customer must
+come from the snapshot. Skipped formats and a non-empty `dropped` or
+`issues` must be announced to the operator, never glossed over.
 
 ## CLI
 
