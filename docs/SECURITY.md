@@ -10,14 +10,34 @@ that rule.
 
 | Path | Mechanism | Where the secret goes |
 |---|---|---|
-| Claude interface | `koi_tenant_add` / `xsiam_tenant_add` spawn a **local dialog subprocess** (tkinter). The operator types or pastes the secret into that native window. | OS credential store |
+| Claude interface | `koi_tenant_add` / `xsiam_tenant_add` start a **local capture page** as a subprocess: an HTTP server bound to `127.0.0.1` on a random port, guarded by a one-time token, expiring after 5 minutes. The operator types or pastes the secret into that page. | OS credential store |
 | Terminal | `koi-pov-mcp tenants add` / `xsiam add` prompt via `getpass` (hidden input, never argv, so never visible in the process list or shell history). | OS credential store |
 | Env vars (legacy) | `KOI_API_KEY[_<ALIAS>]` in the MCP server env block. | Claude config file |
 
-The dialog subprocess writes to the store itself and exits with a status
-code; the MCP tool only ever sees "saved / cancelled / failed", never the
-value. Tool results, `koi_tenants`, and the CLI `list` commands return
-aliases and metadata only.
+The capture subprocess writes to the store itself; the MCP tool only ever
+sees "saved / cancelled / expired", never the value. Tool results,
+`koi_tenants`, and the CLI `list` commands return aliases and metadata only.
+
+A native Tk window remains available for operators who prefer it
+(`python -m koi_pov_mcp.gui koi <alias> --tk`), but it is not the default:
+when an MCP host spawns the server on Windows, a Tk window is created and
+not reliably surfaced, so the operator sees nothing until the timeout.
+
+### The capture log
+
+The page writes its URL to `koi-pov-capture-<mode>-<alias>.log` in the temp
+directory, and the tool reads it from there. What that file contains and does
+not:
+
+- it holds the **URL and its one-time token**, which grants access to the
+  empty form, not to any secret
+- it never holds the submitted value: the page writes that straight to the
+  credential store
+- the token is single-use and the page expires 5 minutes after it started,
+  so a stale log is inert
+
+On a shared machine, delete `koi-pov-capture-*.log` after adding a tenant
+rather than leaving a live token readable for those five minutes.
 
 ## Where secrets live
 
@@ -35,13 +55,13 @@ entry and the index entry.
 
 ## What the model can and cannot do
 
-Can: trigger the dialogs, test connectivity, use the credentials
+Can: start the capture pages, test connectivity, use the credentials
 *indirectly* (the server signs the API calls), see aliases and metadata.
 Cannot: read, echo, or export any secret; no tool returns one.
 
 If an operator pastes a credential into the chat anyway, the skill instructs
 Claude to refuse to use it, advise rotating it in the console, and rerun the
-dialog. A secret that has entered a conversation should be considered
+capture page. A secret that has entered a conversation should be considered
 exposed.
 
 ## Outbound connections
@@ -62,12 +82,18 @@ Standard `HTTPS_PROXY` env vars are honoured (requests).
 ## Data at rest
 
 Collected tenant data (`pov_report.json`, snapshots, enrichment,
-correlation, deliverables) contains **customer-confidential PoV material**
-and is stored unencrypted under the user's profile. Treat the workstation
-accordingly (disk encryption, screen lock); on shared machines, point
-`KOI_POV_WORKDIR` at an encrypted location. `pov_reset` archives rather than
-deletes: purge `.bak` files and `history_archive/` yourself when a PoV must
-be fully destroyed.
+correlation, deliverables) contains **customer-confidential PoV material**:
+customer names, hostnames, and a full software inventory. It is stored
+unencrypted under the user's profile. Treat the workstation accordingly
+(disk encryption, screen lock); on shared machines, point `KOI_POV_WORKDIR`
+at an encrypted location. `pov_reset` archives rather than deletes: purge
+`.bak` files and `history_archive/` yourself when a PoV must be fully
+destroyed.
+
+**Never commit any of it.** The work directory sits outside the repository by
+design and the rendered deliverables are the most sensitive artefacts the
+tool produces. This project's own repository is public and contains no
+customer identifier of any kind; keep it that way.
 
 Customer isolation is structural: one directory per tenant, every tool
 scoped to one alias, and the skill refuses cross-customer comparisons.
