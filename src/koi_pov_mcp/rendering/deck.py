@@ -6,6 +6,11 @@ Ported from jbillochon/povplatform (rendering/deck.py): same palette, same
 images. Added here: a success-criteria scorecard, threat-intelligence and
 XSIAM slides, plus null-awareness so an uncollected domain reads
 "not measured" rather than zero.
+
+The analytical slides (supply chain, findings, attack scenarios, recommended
+actions, threat context) live in deck_sections.py and are bound onto
+DeckBuilder by its attach() at the bottom of this module; build() calls them
+in place so the slide order stays readable here.
 """
 
 from __future__ import annotations
@@ -21,6 +26,7 @@ from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
 from pptx.oxml.ns import qn
 from pptx.util import Emu, Inches, Pt
 
+from . import deck_sections
 from .common import NOT_MEASURED, Data
 
 log = logging.getLogger(__name__)
@@ -859,16 +865,25 @@ class DeckBuilder:
         self.slide_scorecard()
         self.slide_discovery()
         self.slide_risk()
+        self.slide_supply_chain()
+        self.slide_supply_chain_items()
         self.slide_threat_intel()
         self.slide_governance()
         self.slide_remediation()
         self.slide_agentic()
         self.slide_xsiam()
+        self.slides_findings()
+        self.slides_scenarios()
+        self.slides_actions()
+        self.slide_threat_context()
         self.slide_next_steps()
         self.slide_appendix()
         self.prs.save(path)
         log.info("Deck written to %s", path)
         return path
+
+
+deck_sections.attach(DeckBuilder)
 
 
 def build_deck(data: dict, path: str, narrative: dict | None = None) -> str:
