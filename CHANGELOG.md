@@ -2,6 +2,62 @@
 
 All notable changes to koi-pov-mcp.
 
+## 0.8.0 - 2026-07-30
+
+The deliverables reached the bar set by the PoV platform's own output, and
+the credential page stopped lying about whether it had opened.
+
+- **Structured narrative contract.** `render_deliverables` accepted three
+  free-text slots, which capped the report well below what the platform
+  produces. It now takes `headline`, `key_findings`, `attack_scenarios`,
+  `recommended_actions`, `threat_context` and `data_gaps` as structured
+  arguments, using the same vocabulary as
+  [povplatform](https://github.com/jbillochon/povplatform)'s
+  `intelligence/schema.py`, so a section written for one project moves to
+  the other without translation.
+- **Citations are verified before anything is written.** Every evidence
+  entry is checked against an index built from the snapshot. Unverifiable
+  evidence is stripped and a finding or scenario left with none is dropped
+  entirely, rather than shipped with a caveat. The call returns a
+  `validation` report with citations checked, verified, the resulting rate,
+  what was dropped and why.
+- **`audit_prose_for_numbers`.** The rule "the model never produces a
+  figure" was a written instruction and nothing more. Narrative prose is now
+  scanned for hand-written numbers, ignoring years and small ordinals, and
+  every hit comes back as a `prose_number` issue. The rule is mechanically
+  enforceable instead of merely stated.
+- **Supply-chain view**, ported unchanged from povplatform: entry channels
+  with their shares, publisher concentration, and Koi's flat finding list
+  grouped into four supply-chain dimensions (provenance, maintenance, known
+  vulnerabilities, active compromise). Deterministic throughout - it groups
+  counts Koi reported and never derives a figure of its own. Validated
+  against a reference snapshot, reproducing the platform's published figures
+  exactly, including the `understated` flag that prints "this snapshot did
+  not record an estate-wide count" instead of a misleading zero.
+- **The Word report, the PDF and the deck all carry the analysis.** Software
+  supply chain, findings with severity, confidence, MITRE techniques and
+  evidence, attack scenarios with their chain and what breaks it, ranked
+  recommended actions, threat context under an explicit unverified banner,
+  and data gaps. Deck slides use full-width bands, three findings or two
+  scenarios per slide: an earlier attempt with one item per slide in two
+  columns halved the text measure and left half of every slide empty.
+- **Credential page: the URL now travels through a file, not a pipe.**
+  Driven from a terminal the child's stdout arrived in milliseconds; spawned
+  from inside an MCP host on an EDR-managed workstation it did not, and the
+  tool reported failure while the page sat open in the operator's browser.
+  Two further defects fixed alongside: `sys.executable` is the console-script
+  wrapper when a host starts the server, not python, so re-invoking it with
+  `-m` reached the CLI's argument parser; and reading exactly one line of
+  output lost a URL that had been printed correctly. When the URL still does
+  not arrive, the error now gives the log path instead of declaring failure.
+- Skill 3.0.0: drives the structured contract, states the evidence rules and
+  the no-figures-in-prose rule, and requires the `validation` block to be
+  reported after every render.
+- Documentation: `docs/TOOLS.md` had drifted two generations behind on
+  `koi_tenant_add` and described `render_deliverables` with its original
+  three arguments. The PDF has been drawn with reportlab since the port, not
+  WeasyPrint, and the docs said otherwise.
+
 ## 0.7.3 - 2026-07-24
 
 First run against a real tenant surfaced two integrity flaws and one
