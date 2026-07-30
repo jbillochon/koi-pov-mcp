@@ -19,8 +19,10 @@ sees it. Connectivity is tested immediately and the tenant is usable at
 once, no restart.
 
 If no tab opens automatically, Claude gives you the URL: open it manually
-and finish there. If the page cannot run at all, use the terminal command
-below, which does exactly the same thing.
+and finish there. If Claude says the page is running but has not reported
+its URL, **look in your browser first** - the tab is usually already open.
+The address is also written to
+`%TEMP%\koi-pov-capture-koi-<alias>.log` (`$TMPDIR` elsewhere).
 
 The tenant gets a dedicated environment: its own data file, snapshot
 history, and deliverables directory. Nothing is ever shared between tenants.
@@ -155,18 +157,60 @@ The workflow always runs in this order:
 2. Optional enrichment questions (TI, then XSIAM) if not already done.
 3. Narrative written from the collected JSON only (executive summary written
    last, success-criteria verdicts each tied to evidence).
-4. Rendering into the tenant's `deliverables/` directory:
-   - `report.docx` and `deck.pptx`: always available (pure Python)
-   - `report.pdf`: when WeasyPrint is installed
-     (`pip install 'koi-pov-mcp[pdf]'`; needs GTK on Windows)
+4. Rendering into the tenant's `deliverables/` directory: `report.docx`,
+   `report.pdf` and `deck.pptx`, all pure Python with no system dependency.
 
-Claude reports exactly which formats were produced and which were skipped
-and why. Any narrative section you have not validated appears as a visible
-`[[TO BE PROVIDED: ...]]` in the document: a placeholder is an action item,
-an invented number reaching a customer is a lost account.
+### What is in them
+
+Each document has a data half and an analysis half.
+
+The **data sections** are computed from your tenant with no input at all:
+discovery by category and marketplace, the software supply chain (which
+marketplaces the software arrives through and their share, how concentrated
+the publisher base is, and Koi's findings grouped into four questions -
+provenance, maintenance, known vulnerabilities, active compromise), the risk
+inventory, governance, remediation, agentic activity and the threat-intel
+tables.
+
+The **analysis sections** are written for this tenant: a one-line headline,
+the executive summary, findings with a severity and a stated confidence,
+attack scenarios with their chain and the control that breaks it,
+recommended actions ranked by risk reduced, threat context under an explicit
+"not verified against your tenant" banner, and the data gaps.
+
+### How you know it is trustworthy
+
+Every claim in the analysis sections cites the items, findings, policies,
+agents or CVEs it rests on, and those citations are checked against your
+collected data before the documents are written. Anything that cannot be
+traced is removed rather than shipped with a caveat, and narrative prose is
+scanned for hand-written figures, because every number you show a customer
+must come from their tenant.
+
+Claude reports exactly which formats were produced, which were skipped and
+why, and the verification result: how many citations were checked and
+verified, and what was dropped. **Ask for that block if it is not shown.** A
+claim that did not survive verification is absent from the document, and you
+want to know which one and why.
+
+Any narrative section not validated appears as a visible
+`[[TO BE PROVIDED: ...]]`: a placeholder is an action item, an invented
+number reaching a customer is a lost account.
 
 Deliverables are in **English** (customer-facing); the conversation with you
 stays in your language.
+
+### Getting the most out of them
+
+Two things materially change the quality of what comes out:
+
+- **Give the PoV window and the customer name** up front
+  (*"set the PoV metadata for acme: customer ACME Corp, 1 to 31 July"*),
+  otherwise the documents carry a collection date instead of a bounded
+  assessment period.
+- **State the success criteria agreed at kickoff.** That section is the
+  first thing a customer reads, and it is the only one Claude cannot derive
+  from the data.
 
 ## 8. Starting a new PoV on a tenant
 
