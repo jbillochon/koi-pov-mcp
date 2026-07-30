@@ -15,16 +15,45 @@ end, entirely from the Claude interface:
   dated and traceable.
 - **Optional XSIAM cross-referencing**: link a Cortex XSIAM tenant to a Koi
   tenant (same approach) and correlate agent coverage and incidents.
-- **Rendered deliverables**: report.docx and deck.pptx everywhere (pure
-  Python), report.pdf where WeasyPrint is available. Missing narrative shows
-  as a visible `[[TO BE PROVIDED]]`, never as an invented figure.
+- **Rendered deliverables**: report.docx, report.pdf and deck.pptx, all pure
+  Python with no system dependency. Beyond the data sections, each carries
+  the analysis: software supply chain, findings, attack scenarios, ranked
+  recommended actions, threat context and data gaps.
+- **Nothing ships unverified**: every claim in the analytical sections cites
+  the collected data it rests on, citations are checked against the snapshot
+  before the documents are written, and anything untraceable is dropped
+  rather than shipped with a caveat. Missing narrative shows as a visible
+  `[[TO BE PROVIDED]]`, never as an invented figure.
 
 Standalone and cross-platform: **Windows, Linux, macOS**. No Docker, no
 database, no running service.
 
 > Deployment-independent rewrite of the collection layer of
 > [povplatform](https://github.com/jbillochon/povplatform). The Koi client,
-> collector and TI design are ported from it; nothing here imports it.
+> collector, supply-chain analysis and TI design are ported from it; nothing
+> here imports it.
+
+## How the documents stay honest
+
+The line between what is computed and what is written is the point of the
+design.
+
+**Computed from the snapshot, with no input**: discovery, the supply-chain
+view (entry channels and their shares, publisher concentration, the four
+trust dimensions), the risk inventory, governance, remediation, agentic
+activity and the threat-intelligence tables.
+
+**Written by Claude under the skill's rules**: the headline, executive
+summary, findings, attack scenarios, recommended actions, threat context and
+data gaps.
+
+Between the two sits a verification step. Every piece of evidence names an
+item, a finding, a policy, an agent or a CVE that must exist in the collected
+data; what cannot be traced is stripped, and a finding or scenario left with
+no evidence is removed entirely. Narrative prose is scanned for hand-written
+figures, because every number a customer reads must come from their tenant.
+The call returns a `validation` report saying how many citations were checked
+and verified, and what did not survive.
 
 ## Documentation
 
@@ -77,8 +106,11 @@ conversational; see the [User Guide](docs/USER_GUIDE.md).
 
 **Quit Claude Desktop and any Claude Code session first.** While they run,
 the MCP server holds the venv's `koi-pov-mcp` executable open and pip cannot
-replace it (on Windows the upgrade fails with a file-in-use error and can
-leave a `~oi-pov-mcp` residue directory).
+replace it. On Windows the upgrade fails with a file-in-use error, and
+`--force-reinstall` is worse: pip uninstalls before installing, so it removes
+the package, fails on the locked executable, and leaves nothing to start.
+Plain `--upgrade` on a stopped server is the safe path; see
+[Troubleshooting](docs/TROUBLESHOOTING.md) if it has already happened.
 
 ```bash
 cd <your clone> && git pull
