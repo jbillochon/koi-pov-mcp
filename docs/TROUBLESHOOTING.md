@@ -15,11 +15,20 @@
   5.1 and pwsh (JSON handling is delegated to the venv's Python).
 
 **`pip install --upgrade .` fails: file in use / access denied**
-- A running MCP server holds `venv\Scripts\koi-pov-mcp.exe` open. Quit
-  Claude Desktop (from the tray) and any Claude Code session, then re-run.
-- If an interrupted upgrade left a `~oi-pov-mcp` (or similar) directory in
-  `venv\Lib\site-packages`, delete it: it is a rename residue and causes pip
-  warnings on every later command.
+- A running MCP server holds `venv\Scripts\koi-pov-mcp.exe` open. **Quit
+  Claude Desktop first**, from the tray, and end any Claude Code session.
+- Never run `--force-reinstall` against a running server. pip uninstalls
+  before it installs, so it removes the package, then fails on the locked
+  `.exe`, and leaves nothing to start: the server disconnects on the next
+  launch.
+- If an interrupted upgrade left a `~oi_pov_mcp` (or similar) directory in
+  `venv\Lib\site-packages`, delete it and reinstall:
+  ```powershell
+  $sp = "$env:USERPROFILE\.koi-pov-mcp\venv\Lib\site-packages"
+  Get-ChildItem $sp -Filter '~*' | Remove-Item -Recurse -Force
+  & "$env:USERPROFILE\.koi-pov-mcp\venv\Scripts\python.exe" -m pip install `
+      --no-cache-dir "git+https://github.com/jbillochon/koi-pov-mcp.git"
+  ```
 - To check what is holding it on Windows:
   `Get-Process | Where-Object { $_.Path -like "*koi-pov-mcp*" }`
 - After upgrading, restart Claude Desktop and run `/mcp` in Claude Code to
@@ -39,15 +48,29 @@
 - Alias typo. `koi-pov-mcp tenants list` (or the `koi_tenants` tool) shows
   what the server actually sees.
 
-**No browser tab opens for the credential page**
-- Claude relays the URL in its answer: open it manually, the page is already
-  running and waits 5 minutes.
-- If there is no URL either, the capture process could not start; use the
-  terminal fallback, which is equivalent:
+**"the capture page is running but has not reported its URL yet"**
+- **Check the browser first.** This message means the page process is alive,
+  so a tab has usually already opened and is waiting for the key. The
+  earlier wording claimed failure here, which sent operators to the terminal
+  fallback while the form sat open in front of them.
+- The address is also on disk. The page writes it to
+  `%TEMP%\koi-pov-capture-koi-<alias>.log` (`$TMPDIR` on macOS/Linux), first
+  line, `URL http://127.0.0.1:<port>/?t=<token>`. Open it manually; the page
+  expires 5 minutes after it started.
+- Versions before 0.8.0 read that URL through an anonymous pipe. Driven from
+  a terminal it arrived in milliseconds; spawned from inside Claude Desktop
+  on an EDR-managed workstation it did not arrive at all, and the tool
+  reported failure while the page was open. 0.8.0 reads the file instead.
+- Also fixed in 0.8.0: when a host started the server through
+  `koi-pov-mcp.exe`, `sys.executable` was that wrapper rather than python, so
+  the capture page was launched as `koi-pov-mcp.exe -m koi_pov_mcp.gui ...`
+  and died on the CLI's argument parser. Symptom: an immediate error quoting
+  `usage: koi-pov-mcp [-h] {serve,tenants,xsiam}`.
+
+**No browser tab opens and no URL is given**
+- The capture process could not start at all. The terminal fallback is
+  equivalent and writes to the same store:
   `koi-pov-mcp tenants add <alias> --test` (or `xsiam add`).
-- Note for versions before 0.7.1: capture used a native Tk window that
-  Claude Desktop did not reliably surface on Windows (the operator saw
-  nothing until the timeout). Upgrade to 0.7.1+, which uses the browser.
 - Tk is still available if preferred:
   `python -m koi_pov_mcp.gui koi <alias> --tk`.
 
@@ -89,9 +112,37 @@
 
 ## Deliverables
 
-**PDF skipped**
-- WeasyPrint missing: `pip install 'koi-pov-mcp[pdf]'`. On Windows it also
-  needs the GTK runtime; DOCX and PPTX never depend on it.
+**A format is listed under `skipped`**
+- The reason is in the value. One failing format never sinks the others, so
+  a call that produced two documents out of three is not a full delivery and
+  must be reported as such.
+- The PDF is drawn with reportlab and has no system dependency. If it is
+  skipped for a missing import, reinstall the package rather than installing
+  GTK: WeasyPrint is not used here.
+
+**`validation.dropped` is not empty**
+- A finding or scenario cited something that could not be found in the
+  snapshot, so the whole block was removed rather than shipped with an
+  unverifiable claim. `validation.issues` names the reference and why it
+  failed.
+- The usual cause is citing an item by a name that does not appear in the
+  collected lists. Cite items **by name as they appear in
+  `pov_report_json`**; `item_id` exists only on `action_candidates`.
+- A legitimate citation being rejected on a very short item name means the
+  substring floor in `rendering/narrative.py` is too high for that name.
+
+**A `prose_number` issue**
+- A figure was written by hand into narrative prose. Every number shown to a
+  customer must come from the snapshot, and the data sections already render
+  them. Rewrite the sentence qualitatively ("a small number of endpoints")
+  and let the tables carry the counts.
+
+**A supply-chain dimension shows no total but names items**
+- Working as intended. The collector caps `finding_frequency`, so findings
+  outside the cut total zero while named items still carry them. The
+  renderers print "this snapshot did not record an estate-wide count"
+  rather than a zero that would tell a customer they have no active
+  compromise indicators while a malicious item sits in the same document.
 
 **`[[TO BE PROVIDED]]` in the output**
 - Working as intended: a narrative section was not written/validated, or a
@@ -102,6 +153,7 @@
 
 - MCP server log (Windows):
   `%APPDATA%\Claude\logs\mcp-server-koi-pov.log`
+- Credential page log: `%TEMP%\koi-pov-capture-<mode>-<alias>.log`
 - State: `KOI_POV_WORKDIR`, or the OS user-data dir
   (Windows `%LOCALAPPDATA%\koi-pov-mcp`, macOS
   `~/Library/Application Support/koi-pov-mcp`, Linux
